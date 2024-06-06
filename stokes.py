@@ -29,8 +29,6 @@ def dudt(u_cqks):
     zero_wavevector_qks = (wavevector_cqks.T == np.zeros(3, dtype=int)).T.all(axis=0)
     wavevector_sq_qks = np.sum(wavevector_cqks ** 2, axis=0)
     wavevector_sq_qks[zero_wavevector_qks] = 1.0  # to avoid divide by zero
-    return viscosity * wavevector_sq_qks * u_cqks.p + wavevector_cqks * np.sum(wavevector_cqks * uu_cqks.p,
-                                                                               axis=0) / wavevector_sq_qks - uu_cqks.p
-
+    return viscosity * wavevector_sq_qks * u_cqks.p
 
 dudt_cxyz = dudt(u_cqks)
