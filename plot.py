@@ -1,15 +1,23 @@
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib.animation as animation
 from netCDF4 import Dataset
 
 file = Dataset('navier_stokes.nc', 'r')
 
-u_fcxyz = file.variables['u_cxyz']
+u_fcsxyz = file.variables['velocity']
 
-for u_csxyz in u_fcxyz:
-    u_cxyz = u_csxyz[:, 0, ...]
-    abs_u_qks = np.sqrt(np.sum(np.abs(u_cxyz) ** 2, axis=0))
-    plt.figure()
-    plt.pcolormesh(u_cxyz[0, :, :, 0])
-    plt.colorbar()
-plt.show()
+fig = plt.figure()
+pmesh = plt.pcolormesh(u_fcsxyz[0, 0, 0, :, :, 0])
+
+
+# plt.colorbar()
+
+def animate(i):
+    pmesh.set_array(u_fcsxyz[i, 0, 0, :, :, 0].flatten())
+    return pmesh
+
+
+ani = animation.FuncAnimation(fig, animate, frames=u_fcsxyz.shape[0], interval=100)
+ffwriter = animation.FFMpegWriter(fps=10)
+ani.save('navier_stokes.mp4', writer=ffwriter)
