@@ -1,4 +1,5 @@
 import sys
+import time
 
 import numpy as np
 from mpi4py import MPI
@@ -14,10 +15,10 @@ nb_grid_pts = (32, 32, 32)
 physical_size = (1, 1, 1)
 grid_spacing = np.array(physical_size) / np.array(nb_grid_pts)
 
-#nb_steps = 10000
-nb_steps = 10
+nb_steps = 100000
+#nb_steps = 10
 screen_interval = 100  # output to screen every `screen_interval` steps
-dump_interval = 1000  # dump every `dump_interval` steps
+dump_interval = 100  # dump every `dump_interval` steps
 timestep = 0.001
 #timestep = 0.01
 
@@ -25,15 +26,13 @@ fft = FFT(nb_grid_pts, engine='pocketfft')
 x, y, z = fft.coords
 
 # Velocity field
-velocity_amplitude = 0.1
-u_cxyz = fft.real_space_field('u_cxyz', 3)
+velocity_amplitude = 1
+u_cxyz = fft.real_space_field('velocity', 3)
 u_cxyz.p = velocity_amplitude * np.array([
     np.sin(2 * np.pi * x) * np.cos(2 * np.pi * y) * np.cos(2 * np.pi * z),
     -np.cos(2 * np.pi * x) * np.sin(2 * np.pi * y) * np.cos(2 * np.pi * z),
     np.zeros_like(x)
 ])
-
-sys.stdout.write(f'Initial - {np.min(u_cxyz)}/{np.max(u_cxyz)}\n')
 
 # Fourier space velocity field
 u_cqks = fft.fourier_space_field('u_cqks', 3)
@@ -48,6 +47,10 @@ wavevector0_sq_qks = wavevector_sq_qks.copy()
 wavevector0_sq_qks[zero_wavevector_qks] = 1.0  # to avoid divide by zero
 inv_wavevector_cqks = wavevector_cqks / wavevector0_sq_qks  # k / |k|^2
 
+# Dealiasing field
+max_wavevector_c = 2/3 * np.pi / grid_spacing
+dealias_qks = np.all((np.abs(wavevector_cqks).T < max_wavevector_c).T, axis=0)
+
 def dudt(t, uarr_cqks):
     # Get fields
     u_cqks = fft.fourier_space_field('u_cqks', 3)
@@ -60,20 +63,14 @@ def dudt(t, uarr_cqks):
     # Copy numpy array to field
     u_cqks.p = uarr_cqks
 
-    print('---')
-    print('u_cqks:', np.abs(u_cqks.p).max())
-
     # Compute u x (nabla x u) = u x (curl u)
     curlu_cqks.p = np.cross(wavevector_cqks * 1j, u_cqks.p, axis=0)
     fft.ifft(curlu_cqks, curlu_cxyz)
-    print('curlu_cxyz:', np.abs(curlu_cxyz.p).max())
     fft.ifft(u_cqks, u_cxyz)
-    u_cxyz.p *= fft.normalisation
-    print('u_cxyz:', np.abs(u_cxyz.p).max())
+    #u_cxyz.p *= fft.normalisation
     ucurlu_cxyz.p = np.cross(u_cxyz.p, curlu_cxyz.p, axis=0)
-    print('ucurlu_cxyz:', np.abs(ucurlu_cxyz.p).max())
     fft.fft(ucurlu_cxyz, ucurlu_cqks)
-    print('ucurlu_cqks:', np.abs(ucurlu_cqks.p).max())
+    ucurlu_cqks.p *= fft.normalisation * dealias_qks
 
     # Compute dudt
     return ucurlu_cqks.p \
@@ -92,13 +89,20 @@ def rk4(f, t, y, dt):
 file = FileIONetCDF('navier_stokes.nc', OpenMode.Overwrite)
 file.register_field_collection(fft.real_field_collection)
 
+last_time = None
 for n in range(nb_steps):
     if rank == 0 and n % screen_interval == 0:
         u_cqks.p = uarr_cqks
         fft.ifft(u_cqks, u_cxyz)
-        sys.stdout.write(
-            f'Step {n}/{nb_steps} - {np.min(u_cxyz.p):>7.3} / {np.mean(u_cxyz.p):>7.3} / {np.max(u_cxyz.p):>7.3}\n')
+        if last_time is not None:
+            frames_per_second = screen_interval / (time.time() - last_time)
+            sys.stdout.write(
+                f'Step {n}/{nb_steps} - {np.min(u_cxyz.p):>7.3} / {np.mean(u_cxyz.p):>7.3} / {np.max(u_cxyz.p):>7.3} - {frames_per_second} frames/s\n')
+        else:
+            sys.stdout.write(
+                f'Step {n}/{nb_steps} - {np.min(u_cxyz.p):>7.3} / {np.mean(u_cxyz.p):>7.3} / {np.max(u_cxyz.p):>7.3}\n')
         sys.stdout.flush()
+        last_time = time.time()
     uarr_cqks += rk4(dudt, 0, uarr_cqks, timestep)
     if n % dump_interval == 0:
         u_cqks.p = uarr_cqks
