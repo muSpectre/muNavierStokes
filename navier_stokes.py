@@ -9,20 +9,21 @@ from muFFT import FFT
 
 rank = MPI.COMM_WORLD.Get_rank()
 
-viscosity = 1/1600
-#viscosity = 0.01
+viscosity = 1 / 1600
+# viscosity = 0.01
 nb_grid_pts = (32, 32, 32)
 physical_size = (1, 1, 1)
 grid_spacing = np.array(physical_size) / np.array(nb_grid_pts)
 
 nb_steps = 100000
-#nb_steps = 10
+# nb_steps = 40
 screen_interval = 100  # output to screen every `screen_interval` steps
+# screen_interval = 1
 dump_interval = 100  # dump every `dump_interval` steps
 timestep = 0.001
-#timestep = 0.01
+# timestep = 0.01
 
-fft = FFT(nb_grid_pts, engine='pocketfft')
+fft = FFT(nb_grid_pts, engine='fftwmpi', communicator=MPI.COMM_WORLD)
 x, y, z = fft.coords
 
 # Velocity field
@@ -48,8 +49,9 @@ wavevector0_sq_qks[zero_wavevector_qks] = 1.0  # to avoid divide by zero
 inv_wavevector_cqks = wavevector_cqks / wavevector0_sq_qks  # k / |k|^2
 
 # Dealiasing field
-max_wavevector_c = 2/3 * np.pi / grid_spacing
+max_wavevector_c = 2 / 3 * np.pi / grid_spacing
 dealias_qks = np.all((np.abs(wavevector_cqks).T < max_wavevector_c).T, axis=0)
+
 
 def dudt(t, uarr_cqks):
     # Get fields
@@ -67,7 +69,6 @@ def dudt(t, uarr_cqks):
     curlu_cqks.p = np.cross(wavevector_cqks * 1j, u_cqks.p, axis=0)
     fft.ifft(curlu_cqks, curlu_cxyz)
     fft.ifft(u_cqks, u_cxyz)
-    #u_cxyz.p *= fft.normalisation
     ucurlu_cxyz.p = np.cross(u_cxyz.p, curlu_cxyz.p, axis=0)
     fft.fft(ucurlu_cxyz, ucurlu_cqks)
     ucurlu_cqks.p *= fft.normalisation * dealias_qks
@@ -78,7 +79,28 @@ def dudt(t, uarr_cqks):
         - wavevector_cqks * np.sum(inv_wavevector_cqks * ucurlu_cqks.p, axis=0)
 
 
-def rk4(f, t, y, dt):
+def rk4(f, t: float, y: np.ndarray, dt: float) -> np.ndarray:
+    """
+    Implements the fourth-order Runge-Kutta method for numerical integration
+    of multidimensional fields.
+
+    Parameters
+    ----------
+    f : function
+        The function to be integrated. It should take two arguments: time t
+        and field y.
+    t : float
+        The current time.
+    y : array_like
+        The current value of the field.
+    dt : float
+        The time step for the integration.
+
+    Returns
+    -------
+    np.ndarray
+        The increment of the field required to obtain the value at t + dt.
+    """
     k1 = f(t, y)
     k2 = f(t + dt / 2, y + dt / 2 * k1)
     k3 = f(t + dt / 2, y + dt / 2 * k2)
@@ -86,22 +108,23 @@ def rk4(f, t, y, dt):
     return dt / 6 * (k1 + 2 * k2 + 2 * k3 + k4)
 
 
-file = FileIONetCDF('navier_stokes.nc', OpenMode.Overwrite)
+file = FileIONetCDF('navier_stokes.nc', OpenMode.Overwrite, communicator=MPI.COMM_WORLD)
 file.register_field_collection(fft.real_field_collection)
 
 last_time = None
 for n in range(nb_steps):
-    if rank == 0 and n % screen_interval == 0:
+    if n % screen_interval == 0:
         u_cqks.p = uarr_cqks
         fft.ifft(u_cqks, u_cxyz)
-        if last_time is not None:
-            frames_per_second = screen_interval / (time.time() - last_time)
-            sys.stdout.write(
-                f'Step {n}/{nb_steps} - {np.min(u_cxyz.p):>7.3} / {np.mean(u_cxyz.p):>7.3} / {np.max(u_cxyz.p):>7.3} - {frames_per_second} frames/s\n')
-        else:
-            sys.stdout.write(
-                f'Step {n}/{nb_steps} - {np.min(u_cxyz.p):>7.3} / {np.mean(u_cxyz.p):>7.3} / {np.max(u_cxyz.p):>7.3}\n')
-        sys.stdout.flush()
+        if rank == 0:
+            if last_time is not None:
+                frames_per_second = screen_interval / (time.time() - last_time)
+                sys.stdout.write(
+                    f'Step {n:>5}/{nb_steps:<5} - {np.min(u_cxyz.p):>9.3} / {np.mean(u_cxyz.p):>9.3} / {np.max(u_cxyz.p):>9.3} - {frames_per_second:10.5} frames/s\n')
+            else:
+                sys.stdout.write(
+                    f'Step {n:>5}/{nb_steps:<5} - {np.min(u_cxyz.p):>9.3} / {np.mean(u_cxyz.p):>9.3} / {np.max(u_cxyz.p):>9.3}\n')
+            sys.stdout.flush()
         last_time = time.time()
     uarr_cqks += rk4(dudt, 0, uarr_cqks, timestep)
     if n % dump_interval == 0:
