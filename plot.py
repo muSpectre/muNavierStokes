@@ -8,13 +8,15 @@ file = Dataset('navier_stokes.nc', 'r')
 u_fcsxyz = file.variables['velocity']
 
 fig = plt.figure()
-pmesh = plt.pcolormesh(u_fcsxyz[0, 0, 0, :, :, 0])
+data = u_fcsxyz[0, 0, 0, :, :, 0]
+pmesh = plt.pcolormesh(data / np.std(data))
 
 
 # plt.colorbar()
 
 def animate(i):
-    pmesh.set_array(u_fcsxyz[i, 0, 0, :, :, 0].flatten())
+    data = u_fcsxyz[i, 0, 0, :, :, 0]
+    pmesh.set_array(data.flatten() / np.std(data))
     return pmesh
 
 
