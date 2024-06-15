@@ -12,7 +12,7 @@ viscosity = 1 / 1600
 nb_grid_pts = (32, 32, 32)
 physical_size = (1, 1, 1)
 grid_spacing = np.array(physical_size) / np.array(nb_grid_pts)
-timestep = 0.01
+timestep = 0.001
 
 # I/O parameters
 nb_steps = 100000
