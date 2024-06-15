@@ -7,7 +7,6 @@ from mpi4py import MPI
 from muGrid import FileIONetCDF, OpenMode
 from muFFT import FFT
 
-
 # Simulation parameters
 viscosity = 1 / 1600
 nb_grid_pts = (128, 128, 128)
@@ -62,11 +61,23 @@ dealias_qks = np.all((np.abs(wavevector_cqks).T < max_wavevector_c).T, axis=0)
 
 def dudt(t, uarr_cqks):
     """
-    Compute time derivative of the Fourier-representation of the velocity field.
+    This function implements the incompressible Navier-Stokes equation in its
+    rotational form. It computes the time derivative of the Fourier-representation
+    of the velocity field.
 
-    This is the incompressible Navier-Stokes equation rotational form.
+    Parameters
+    ----------
+    t : float
+        The current time.
+    uarr_cqks : array_like
+        The current value of the Fourier-representation of the velocity field.
+
+    Returns
+    -------
+    array_like
+        The time derivative of the Fourier-representation of the velocity field.
     """
-    # Get fields
+    # Get fields; this will reuse the same memory upon every call
     u_cqks = fft.fourier_space_field('u_cqks', 3)
     u_cxyz = fft.real_space_field('u_cxyz', 3)
     curlu_cqks = fft.fourier_space_field('curlu_cqks', 3)
@@ -83,9 +94,10 @@ def dudt(t, uarr_cqks):
     fft.ifft(u_cqks, u_cxyz)
     ucurlu_cxyz.p = np.cross(u_cxyz.p, curlu_cxyz.p, axis=0)
     fft.fft(ucurlu_cxyz, ucurlu_cqks)
+    # Multiply result with dealiasing field to eliminate Gibbs ringing
     ucurlu_cqks.p *= fft.normalisation * dealias_qks
 
-    # Compute dudt
+    # Navier-Stokes equation
     return ucurlu_cqks.p \
         - viscosity * wavevector_sq_qks * u_cqks.p \
         - wavevector_cqks * np.sum(inv_wavevector_cqks * ucurlu_cqks.p, axis=0)
@@ -119,13 +131,17 @@ def rk4(f, t: float, y: np.ndarray, dt: float) -> np.ndarray:
     k4 = f(t + dt, y + dt * k3)
     return dt / 6 * (k1 + 2 * k2 + 2 * k3 + k4)
 
-
+# Open file for writing velocity field; this uses parallel I/O
 file = FileIONetCDF('navier_stokes.nc', OpenMode.Overwrite, communicator=MPI.COMM_WORLD)
+# Register the field collection of the FFT object
 file.register_field_collection(fft.real_field_collection)
 
+# This holds a timestamp used for reporting the frame rate
 last_time = None
 for n in range(nb_steps):
+    # Output to screen
     if n % screen_interval == 0:
+        # Compute velocity field in real space
         u_cqks.p = uarr_cqks
         fft.ifft(u_cqks, u_cxyz)
         if rank == 0:
@@ -138,10 +154,17 @@ for n in range(nb_steps):
                     f'Step {n:>5}/{nb_steps:<5} - {np.min(u_cxyz.p):>9.3} / {np.mean(u_cxyz.p):>9.3} / {np.max(u_cxyz.p):>9.3}\n')
             sys.stdout.flush()
         last_time = time.time()
+
+    # Integrate velocity field
     uarr_cqks += rk4(dudt, 0, uarr_cqks, timestep)
+
+    # Output to file
     if n % dump_interval == 0:
+        # Compute velocity field in real space
         u_cqks.p = uarr_cqks
         fft.ifft(u_cqks, u_cxyz)
+        # Append frame to file and write all registered fields
         file.append_frame().write()
 
+# Close file
 file.close()
