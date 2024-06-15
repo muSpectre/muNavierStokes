@@ -9,10 +9,10 @@ from muFFT import FFT
 
 # Simulation parameters
 viscosity = 1 / 1600
-nb_grid_pts = (128, 128, 128)
+nb_grid_pts = (32, 32, 32)
 physical_size = (1, 1, 1)
 grid_spacing = np.array(physical_size) / np.array(nb_grid_pts)
-timestep = 0.001
+timestep = 0.01
 
 # I/O parameters
 nb_steps = 100000
@@ -23,7 +23,7 @@ dump_interval = 100  # dump every `dump_interval` steps
 rank = MPI.COMM_WORLD.Get_rank()
 
 # Create FFT engine
-fft = FFT(nb_grid_pts, engine='pfft', communicator=MPI.COMM_WORLD)
+fft = FFT(nb_grid_pts, engine='pocketfft', communicator=MPI.COMM_WORLD)
 
 # Print which FFT engine we are using
 if rank == 0:
