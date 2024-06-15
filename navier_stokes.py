@@ -7,26 +7,33 @@ from mpi4py import MPI
 from muGrid import FileIONetCDF, OpenMode
 from muFFT import FFT
 
-rank = MPI.COMM_WORLD.Get_rank()
 
+# Simulation parameters
 viscosity = 1 / 1600
-# viscosity = 0.01
-nb_grid_pts = (32, 32, 32)
+nb_grid_pts = (128, 128, 128)
 physical_size = (1, 1, 1)
 grid_spacing = np.array(physical_size) / np.array(nb_grid_pts)
-
-nb_steps = 100000
-# nb_steps = 40
-screen_interval = 100  # output to screen every `screen_interval` steps
-# screen_interval = 1
-dump_interval = 100  # dump every `dump_interval` steps
 timestep = 0.001
-# timestep = 0.01
 
-fft = FFT(nb_grid_pts, engine='fftwmpi', communicator=MPI.COMM_WORLD)
+# I/O parameters
+nb_steps = 100000
+screen_interval = 100  # output to screen every `screen_interval` steps
+dump_interval = 100  # dump every `dump_interval` steps
+
+# Store rank into a convenience variable
+rank = MPI.COMM_WORLD.Get_rank()
+
+# Create FFT engine
+fft = FFT(nb_grid_pts, engine='pfft', communicator=MPI.COMM_WORLD)
+
+# Print which FFT engine we are using
+if rank == 0:
+    print(f'FFT engine: {fft.__class__.__name__}')
+
+# Get spatial coordinates
 x, y, z = fft.coords
 
-# Velocity field
+# Initialize velocity field
 velocity_amplitude = 1
 u_cxyz = fft.real_space_field('velocity', 3)
 u_cxyz.p = velocity_amplitude * np.array([
@@ -54,6 +61,11 @@ dealias_qks = np.all((np.abs(wavevector_cqks).T < max_wavevector_c).T, axis=0)
 
 
 def dudt(t, uarr_cqks):
+    """
+    Compute time derivative of the Fourier-representation of the velocity field.
+
+    This is the incompressible Navier-Stokes equation rotational form.
+    """
     # Get fields
     u_cqks = fft.fourier_space_field('u_cqks', 3)
     u_cxyz = fft.real_space_field('u_cxyz', 3)
