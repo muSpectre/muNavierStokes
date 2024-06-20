@@ -16,7 +16,7 @@ grid_spacing = np.array(physical_size) / np.array(nb_grid_pts)
 timestep = 0.001
 velocity_amplitude = 1
 
-kfreeze = 2 * np.pi * 8
+freeze_wavevector = 2 * np.pi * 3 / np.mean(physical_size)
 freeze_amplitude = 1
 
 # I/O parameters
@@ -64,6 +64,10 @@ inv_wavevector_cqks = wavevector_cqks / wavevector0_sq_qks  # k / |k|^2
 # Dealiasing field
 max_wavevector_c = 2 / 3 * np.pi / grid_spacing
 dealias_qks = np.all((np.abs(wavevector_cqks).T < max_wavevector_c).T, axis=0)
+
+if rank == 0:
+    print(f'freezing wavevector: {freeze_wavevector}')
+    print(f'max_wavevector_c: {max_wavevector_c}')
 
 
 def dudt(t, uarr_cqks):
@@ -183,7 +187,7 @@ for n in range(nb_steps):
     uarr_cqks += rk4(dudt, 0, uarr_cqks, timestep)
 
     # Forcing
-    freeze_long_wavelength_amplitudes(uarr_cqks, kfreeze, freeze_amplitude ** 2)
+    freeze_long_wavelength_amplitudes(uarr_cqks, freeze_wavevector, freeze_amplitude ** 2)
 
     # Output to file
     if n % dump_interval == 0:
