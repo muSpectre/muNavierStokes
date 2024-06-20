@@ -3,6 +3,7 @@ import time
 
 import numpy as np
 from mpi4py import MPI
+from NuMPI.Tools import Reduction
 
 from muGrid import FileIONetCDF, OpenMode
 from muFFT import FFT
@@ -13,6 +14,10 @@ nb_grid_pts = (32, 32, 32)
 physical_size = (1, 1, 1)
 grid_spacing = np.array(physical_size) / np.array(nb_grid_pts)
 timestep = 0.001
+velocity_amplitude = 1
+
+kfreeze = 2 * np.pi * 8
+freeze_amplitude = 1
 
 # I/O parameters
 nb_steps = 100000
@@ -21,9 +26,10 @@ dump_interval = 100  # dump every `dump_interval` steps
 
 # Store rank into a convenience variable
 rank = MPI.COMM_WORLD.Get_rank()
+parnp = Reduction(MPI.COMM_WORLD)
 
 # Create FFT engine
-fft = FFT(nb_grid_pts, engine='pocketfft', communicator=MPI.COMM_WORLD)
+fft = FFT(nb_grid_pts, engine='fftwmpi', communicator=MPI.COMM_WORLD)
 
 # Print which FFT engine we are using
 if rank == 0:
@@ -33,13 +39,13 @@ if rank == 0:
 x, y, z = fft.coords
 
 # Initialize velocity field
-velocity_amplitude = 1
 u_cxyz = fft.real_space_field('velocity', 3)
-u_cxyz.p = velocity_amplitude * np.array([
-    np.sin(2 * np.pi * x) * np.cos(2 * np.pi * y) * np.cos(2 * np.pi * z),
-    -np.cos(2 * np.pi * x) * np.sin(2 * np.pi * y) * np.cos(2 * np.pi * z),
-    np.zeros_like(x)
-])
+# u_cxyz.p = velocity_amplitude * np.array([
+#    np.sin(2 * np.pi * x) * np.cos(2 * np.pi * y),  # * np.cos(2 * np.pi * z),
+#    -np.cos(2 * np.pi * x) * np.sin(2 * np.pi * y),  # * np.cos(2 * np.pi * z),
+#    np.zeros_like(x)
+# ])
+u_cxyz.p = np.random.random([3, *fft.nb_subdomain_grid_pts]) - 0.5
 
 # Fourier space velocity field
 u_cqks = fft.fourier_space_field('u_cqks', 3)
@@ -49,6 +55,7 @@ uarr_cqks = u_cqks.p * fft.normalisation
 # Pre-compute wavevectors
 wavevector_cqks = (2 * np.pi * fft.fftfreq.T / grid_spacing).T
 zero_wavevector_qks = (wavevector_cqks.T == np.zeros(3, dtype=int)).T.all(axis=0)
+zero_wavevectorx_qks = wavevector_cqks[0] == 0
 wavevector_sq_qks = np.sum(wavevector_cqks ** 2, axis=0)
 wavevector0_sq_qks = wavevector_sq_qks.copy()
 wavevector0_sq_qks[zero_wavevector_qks] = 1.0  # to avoid divide by zero
@@ -131,6 +138,23 @@ def rk4(f, t: float, y: np.ndarray, dt: float) -> np.ndarray:
     k4 = f(t + dt, y + dt * k3)
     return dt / 6 * (k1 + 2 * k2 + 2 * k3 + k4)
 
+
+def power(u_cqks, mask=None):
+    p = 2 * np.sum(np.real(u_cqks * np.conj(u_cqks)), axis=0)
+    p[zero_wavevectorx_qks] -= np.sum(
+        np.real(u_cqks[:, zero_wavevectorx_qks] * np.conj(u_cqks[:, zero_wavevectorx_qks])), axis=0)
+    if mask is None:
+        return parnp.sum(p) / fft.normalisation
+    else:
+        return parnp.sum(p[mask]) / fft.normalisation
+
+
+def freeze_long_wavelength_amplitudes(u_cqks, k0, target_power):
+    mask = wavevector_sq_qks < k0 ** 2
+    p = power(u_cqks, mask)
+    u_cqks[:, mask] *= np.sqrt(target_power * mask.sum() / p)
+
+
 # Open file for writing velocity field; this uses parallel I/O
 file = FileIONetCDF('navier_stokes.nc', OpenMode.Overwrite, communicator=MPI.COMM_WORLD)
 # Register the field collection of the FFT object
@@ -148,15 +172,18 @@ for n in range(nb_steps):
             if last_time is not None:
                 frames_per_second = screen_interval / (time.time() - last_time)
                 sys.stdout.write(
-                    f'Step {n:>5}/{nb_steps:<5} - {np.min(u_cxyz.p):>9.3} / {np.mean(u_cxyz.p):>9.3} / {np.max(u_cxyz.p):>9.3} - {frames_per_second:10.5} frames/s\n')
+                    f'{n * 100 / nb_steps:>5.2}% - {n * timestep:>9.3} - {np.min(u_cxyz.p):>9.3} / {np.mean(u_cxyz.p):>9.3} / {np.max(u_cxyz.p):>9.3} - {frames_per_second:10.5} frames/s\n')
             else:
                 sys.stdout.write(
-                    f'Step {n:>5}/{nb_steps:<5} - {np.min(u_cxyz.p):>9.3} / {np.mean(u_cxyz.p):>9.3} / {np.max(u_cxyz.p):>9.3}\n')
+                    f'{n * 100 / nb_steps:>5.2}% - {n * timestep:>9.3} - {np.min(u_cxyz.p):>9.3} / {np.mean(u_cxyz.p):>9.3} / {np.max(u_cxyz.p):>9.3}\n')
             sys.stdout.flush()
         last_time = time.time()
 
     # Integrate velocity field
     uarr_cqks += rk4(dudt, 0, uarr_cqks, timestep)
+
+    # Forcing
+    freeze_long_wavelength_amplitudes(uarr_cqks, kfreeze, freeze_amplitude ** 2)
 
     # Output to file
     if n % dump_interval == 0:
