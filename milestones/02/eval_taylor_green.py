@@ -24,7 +24,7 @@ with Dataset('navier_stokes.nc', 'r') as file:
     fft = FFT(nb_grid_pts, engine='pocketfft')
     grid_spacing = np.array(physical_size) / np.array(nb_grid_pts)
 
-    for frame, u_csxyz in enumerate(file.variables['velocity']):
+    for frame, u_csxyz in enumerate(file.variables['u_cxyz']):
         data = u_csxyz[0]
         ampl += [u_csxyz.max()]
 
