@@ -24,7 +24,7 @@ dump_interval = 100  # dump every `dump_interval` steps
 rank = MPI.COMM_WORLD.Get_rank()
 
 # Setup Navier-Stokes solver
-ns = NavierStokes(nb_grid_pts, physical_size, viscosity, dealias=False, communicator=MPI.COMM_WORLD)
+ns = NavierStokes(nb_grid_pts, physical_size, viscosity, dealias=False, engine='pfft', communicator=MPI.COMM_WORLD)
 
 # Get spatial coordinates
 x, y, z = ns.fft.coords
@@ -36,7 +36,8 @@ uarr_cqks.real = rng.standard_normal(uarr_cqks.shape)
 uarr_cqks.imag = rng.standard_normal(uarr_cqks.shape)
 # Initial velocity field should decay as k^(-5/3) for the Kolmogorov spectrum
 fac_qks = np.zeros_like(ns._wavevector_sq_qks)
-fac_qks[np.logical_not(ns._zero_wavevector_qks)] = velocity_amplitude * ns._wavevector_sq_qks[np.logical_not(ns._zero_wavevector_qks)] ** (-5 / 6)
+fac_qks[np.logical_not(ns._zero_wavevector_qks)] = velocity_amplitude * ns._wavevector_sq_qks[
+    np.logical_not(ns._zero_wavevector_qks)] ** (-5 / 6)
 uarr_cqks *= fac_qks
 # Project
 uarr_cqks = ns.to_incompressible(uarr_cqks)
@@ -47,16 +48,13 @@ freeze_mask[ns._zero_wavevector_qks] = False  # Don't include the average veloci
 assert ns._parnp.sum(freeze_mask) > 0
 frozen_velocities = uarr_cqks[:, freeze_mask].copy()
 
-# fft.fft(u_cxyz, u_cqks)
-# uarr_cqks = u_cqks.p * fft.normalisation
-
 if rank == 0:
     print(f'freezing wavevector: {freeze_wavevector}')
 
 # Open file for writing velocity field; this uses parallel I/O
 file = FileIONetCDF('navier_stokes.nc', OpenMode.Overwrite, communicator=MPI.COMM_WORLD)
 # Register the field collection of the FFT object
-u_cxyz = ns.fft.real_space_field('u_cxyz', 3)
+u_cxyz = ns.fft.real_space_field('velocity', 3)
 file.register_field_collection(ns.fft.real_field_collection)
 
 # This holds a timestamp used for reporting the frame rate
@@ -68,14 +66,19 @@ for n in range(nb_steps):
         # Compute velocity field in real space
         u_cqks.p = uarr_cqks
         ns.fft.ifft(u_cqks, u_cxyz)
+        frozen_power = ns.power(uarr_cqks, freeze_mask)
+        total_power = ns.power(uarr_cqks)
+        min_u = ns._parnp.min(u_cxyz.p)
+        mean_u = ns._parnp.mean(u_cxyz.p)
+        max_u = ns._parnp.max(u_cxyz.p)
         if rank == 0:
             if last_time is not None:
                 frames_per_second = screen_interval / (time.time() - last_time)
                 sys.stdout.write(
-                    f'{n * 100 / nb_steps:>5.3}% - {n * timestep:>9.3} - {np.min(u_cxyz.p):>9.3} / {np.mean(u_cxyz.p):>9.3} / {np.max(u_cxyz.p):>9.3} - {ns.power(uarr_cqks, freeze_mask):>9.3} / {ns.power(uarr_cqks):>9.3} - {frames_per_second:10.5} frames/s\n')
+                    f'{n * 100 / nb_steps:>5.3}% - {n * timestep:>9.3} - {min_u:>9.3} / {mean_u:>9.3} / {max_u:>9.3} - {frozen_power:>9.3} / {total_power:>9.3} - {frames_per_second:10.5} frames/s\n')
             else:
                 sys.stdout.write(
-                    f'{n * 100 / nb_steps:>5.3}% - {n * timestep:>9.3} - {np.min(u_cxyz.p):>9.3} / {np.mean(u_cxyz.p):>9.3} / {np.max(u_cxyz.p):>9.3} - {ns.power(uarr_cqks, freeze_mask):>9.3} / {ns.power(uarr_cqks):>9.3}\n')
+                    f'{n * 100 / nb_steps:>5.3}% - {n * timestep:>9.3} - {min_u:>9.3} / {mean_u:>9.3} / {max_u:>9.3} - {frozen_power:>9.3} / {total_power:>9.3}\n')
             sys.stdout.flush()
         last_time = time.time()
 

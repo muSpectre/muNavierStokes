@@ -103,4 +103,4 @@ class NavierStokes:
         u_cqks[:, self._freeze_mask] *= np.sqrt(target_power / p)
 
     def to_incompressible(self, u_cqks):
-        return u_cqks - self._parnp.sum(u_cqks * self._wavevector_cqks, axis=0) * self._inv_wavevector_cqks
+        return u_cqks - np.sum(u_cqks * self._wavevector_cqks, axis=0) * self._inv_wavevector_cqks
