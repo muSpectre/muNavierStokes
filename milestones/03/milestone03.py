@@ -12,8 +12,9 @@ viscosity = 1 / 1600
 nb_grid_pts = (64, 64, 64)
 physical_size = (1, 1, 1)
 timestep = 0.001
+
+# Initial condition
 velocity_amplitude = 1
-freeze_wavevector = 2 * np.pi * 3 / np.mean(physical_size)
 
 # I/O parameters
 nb_steps = 100000
@@ -24,39 +25,29 @@ dump_interval = 100  # dump every `dump_interval` steps
 rank = MPI.COMM_WORLD.Get_rank()
 
 # Setup Navier-Stokes solver
-ns = NavierStokes(nb_grid_pts, physical_size, viscosity, dealias=False, communicator=MPI.COMM_WORLD)
+ns = NavierStokes(nb_grid_pts, physical_size, viscosity, dealias=False, engine='pocketfft', communicator=MPI.COMM_WORLD)
+
+# Print which FFT engine we are using
+if rank == 0:
+    print(f'FFT engine: {ns.fft.__class__.__name__}')
 
 # Get spatial coordinates
 x, y, z = ns.fft.coords
 
-# Fourier space velocity field
-uarr_cqks = np.zeros((3,) + ns.fft.nb_fourier_grid_pts, dtype=complex)
-rng = np.random.default_rng()
-uarr_cqks.real = rng.standard_normal(uarr_cqks.shape)
-uarr_cqks.imag = rng.standard_normal(uarr_cqks.shape)
-# Initial velocity field should decay as k^(-5/3) for the Kolmogorov spectrum
-fac_qks = np.zeros_like(ns._wavevector_sq_qks)
-fac_qks[np.logical_not(ns._zero_wavevector_qks)] = velocity_amplitude * ns._wavevector_sq_qks[np.logical_not(ns._zero_wavevector_qks)] ** (-5 / 6)
-uarr_cqks *= fac_qks
-# Project
-uarr_cqks = ns.to_incompressible(uarr_cqks)
-
-# Store frozen wavevectors
-freeze_mask = ns._wavevector_sq_qks < freeze_wavevector ** 2
-freeze_mask[ns._zero_wavevector_qks] = False  # Don't include the average velocity
-assert ns._parnp.sum(freeze_mask) > 0
-frozen_velocities = uarr_cqks[:, freeze_mask].copy()
-
-# fft.fft(u_cxyz, u_cqks)
-# uarr_cqks = u_cqks.p * fft.normalisation
-
-if rank == 0:
-    print(f'freezing wavevector: {freeze_wavevector}')
+# Initialize velocity field
+u_cxyz = ns.fft.real_space_field('u_cxyz', 3)
+u_cxyz.p = velocity_amplitude * np.array([
+    np.cos(2 * np.pi * x) * np.sin(2 * np.pi * y) * np.sin(2 * np.pi * z),
+    np.sin(2 * np.pi * x) * np.cos(2 * np.pi * y) * np.sin(2 * np.pi * z),
+    -1 / 2 * np.sin(2 * np.pi * x) * np.sin(2 * np.pi * y) * np.cos(2 * np.pi * z)
+])
+u_cqks = ns.fft.fourier_space_field('u_cqks', 3)
+ns.fft.fft(u_cxyz, u_cqks)
+uarr_cqks = u_cqks.p * ns.fft.normalisation
 
 # Open file for writing velocity field; this uses parallel I/O
 file = FileIONetCDF('navier_stokes.nc', OpenMode.Overwrite, communicator=MPI.COMM_WORLD)
 # Register the field collection of the FFT object
-u_cxyz = ns.fft.real_space_field('u_cxyz', 3)
 file.register_field_collection(ns.fft.real_field_collection)
 
 # This holds a timestamp used for reporting the frame rate
@@ -72,19 +63,15 @@ for n in range(nb_steps):
             if last_time is not None:
                 frames_per_second = screen_interval / (time.time() - last_time)
                 sys.stdout.write(
-                    f'{n * 100 / nb_steps:>5.3}% - {n * timestep:>9.3} - {np.min(u_cxyz.p):>9.3} / {np.mean(u_cxyz.p):>9.3} / {np.max(u_cxyz.p):>9.3} - {ns.power(uarr_cqks, freeze_mask):>9.3} / {ns.power(uarr_cqks):>9.3} - {frames_per_second:10.5} frames/s\n')
+                    f'{n * 100 / nb_steps:>5.3}% - {n * timestep:>9.3} - {np.min(u_cxyz.p):>9.3} / {np.mean(u_cxyz.p):>9.3} / {np.max(u_cxyz.p):>9.3} - {ns.power(uarr_cqks):>9.3} - {frames_per_second:10.5} frames/s\n')
             else:
                 sys.stdout.write(
-                    f'{n * 100 / nb_steps:>5.3}% - {n * timestep:>9.3} - {np.min(u_cxyz.p):>9.3} / {np.mean(u_cxyz.p):>9.3} / {np.max(u_cxyz.p):>9.3} - {ns.power(uarr_cqks, freeze_mask):>9.3} / {ns.power(uarr_cqks):>9.3}\n')
+                    f'{n * 100 / nb_steps:>5.3}% - {n * timestep:>9.3} - {np.min(u_cxyz.p):>9.3} / {np.mean(u_cxyz.p):>9.3} / {np.max(u_cxyz.p):>9.3} - {ns.power(uarr_cqks):>9.3}\n')
             sys.stdout.flush()
         last_time = time.time()
 
     # Integrate velocity field
     uarr_cqks += rk4(ns.dudt, 0, uarr_cqks, timestep)
-
-    # Forcing
-    # freeze_long_wavelength_amplitudes(uarr_cqks, freeze_amplitude ** 2)
-    uarr_cqks[:, freeze_mask] = frozen_velocities
 
     # Output to file
     if n % dump_interval == 0:

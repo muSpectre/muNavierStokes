@@ -74,9 +74,7 @@ class NavierStokes:
         # Compute u x (nabla x u) = u x (curl u)
         curlu_cqks.p = np.cross(self._wavevector_cqks * 1j, u_cqks.p, axis=0)
         self._fft.ifft(curlu_cqks, curlu_cxyz)
-        tmp = u_cqks.p.copy()
         self._fft.ifft(u_cqks, u_cxyz)
-        np.testing.assert_allclose(tmp, u_cqks.p)
         ucurlu_cxyz.p = np.cross(u_cxyz.p, curlu_cxyz.p, axis=0)
         self._fft.fft(ucurlu_cxyz, ucurlu_cqks)
         # Multiply result with dealiasing field to eliminate Gibbs ringing

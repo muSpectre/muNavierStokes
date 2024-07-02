@@ -36,4 +36,6 @@ print(f'viscosity = {viscosity}')
 tfine = np.arange(10 * len(ampl)) * timestep / 10
 plt.plot(t, ampl, 'kx')
 plt.plot(tfine, np.exp(a + b * tfine), 'r-')
+plt.xlabel('Time')
+plt.ylabel('Amplitude')
 plt.show()

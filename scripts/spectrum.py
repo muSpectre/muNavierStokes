@@ -24,17 +24,24 @@ with Dataset('navier_stokes.nc', 'r') as file:
                                weights=np.abs(abs_wavevector_qks.flatten()) ** 2,
                                minlength=nb_bins) / nb_values_q
 
-    for frame, u_csxyz in enumerate(file.variables['velocity'][100::100]):
+    for frame, u_csxyz in enumerate(file.variables['u_cxyz'][::1]):
         data = u_csxyz[0]
         u_ampl = np.std(u_csxyz)
         u_cqks = fft.fft(u_csxyz[:, 0, :, :, :])
-        spectrum_q = np.bincount((abs_wavevector_qks.flatten() / bin_width).astype(int),
-                                 weights=(abs_wavevector_qks ** 2 * np.real(
-                                     np.sum(u_cqks * np.conj(u_cqks), axis=0))).flatten(),
-                                 minlength=nb_bins) / nb_values_q
+        energy_spectrum_q = np.bincount((abs_wavevector_qks.flatten() / bin_width).astype(int),
+                                        weights=np.real(np.sum(u_cqks * np.conj(u_cqks), axis=0)).flatten(),
+                                        minlength=nb_bins) / nb_values_q
+        dissipation_spectrum_q = np.bincount((abs_wavevector_qks.flatten() / bin_width).astype(int),
+                                             weights=(abs_wavevector_qks ** 2 * np.real(
+                                                 np.sum(u_cqks * np.conj(u_cqks), axis=0))).flatten(),
+                                             minlength=nb_bins) / nb_values_q
 
-        plt.plot(wavevector_q, spectrum_q, label=f'frame {frame}')
+        plt.loglog(wavevector_q, energy_spectrum_q, label=f'frame {frame}')
 
-plt.xlim(0, 1000)
+x = np.logspace(1, 4, 101)
+plt.plot(x, 1e8 * x ** (-5 / 3), 'k--', label=r'$k^{-5/3}$')
+
+plt.ylim(1, 10 ** 7)
+
 plt.legend()
 plt.show()

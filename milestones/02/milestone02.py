@@ -25,7 +25,7 @@ dump_interval = 100  # dump every `dump_interval` steps
 rank = MPI.COMM_WORLD.Get_rank()
 
 # Setup Navier-Stokes solver
-ns = NavierStokes(nb_grid_pts, physical_size, viscosity, dealias=False, engine='pfft', communicator=MPI.COMM_WORLD)
+ns = NavierStokes(nb_grid_pts, physical_size, viscosity, dealias=False, engine='fftw', communicator=MPI.COMM_WORLD)
 
 # Print which FFT engine we are using
 if rank == 0:
@@ -37,8 +37,8 @@ x, y, z = ns.fft.coords
 # Initialize velocity field
 u_cxyz = ns.fft.real_space_field('u_cxyz', 3)
 u_cxyz.p = velocity_amplitude * np.array([
-    np.sin(2 * np.pi * x) * np.cos(2 * np.pi * y),  # * np.cos(2 * np.pi * z),
-    -np.cos(2 * np.pi * x) * np.sin(2 * np.pi * y),  # * np.cos(2 * np.pi * z),
+    np.cos(2 * np.pi * x) * np.sin(2 * np.pi * y),
+    -np.sin(2 * np.pi * x) * np.cos(2 * np.pi * y),
     np.zeros_like(x)
 ])
 u_cqks = ns.fft.fourier_space_field('u_cqks', 3)
