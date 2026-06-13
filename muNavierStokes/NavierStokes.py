@@ -46,7 +46,13 @@ class NavierStokes:
         self._wavevector_cqks = (2 * np.pi * self._fft.fftfreq.T / self._grid_spacing).T
         self._wavevector_sq_qks = np.sum(self._wavevector_cqks ** 2, axis=0)  # |k|^2
         self._zero_wavevector_qks = self._wavevector_sq_qks == 0  # the k = 0 mode
-        self._zero_wavevectorx_qks = self._wavevector_cqks[0] == 0  # the kx = 0 plane
+
+        # The half-complex (r2c) transform stores only kx in [0, N/2]. Modes
+        # with 0 < kx < N/2 stand in for a +/- pair and are counted twice in the
+        # energy sum, while the kx = 0 plane and (for even Nx) the kx = Nyquist
+        # plane are their own Hermitian conjugates and must be counted once.
+        absfreqx_qks = np.abs(self._fft.fftfreq[0])
+        self._kx_counted_once_qks = (absfreqx_qks == 0) | (absfreqx_qks == 0.5)
 
         # k / |k|^2 for the pressure (Leray) projection. The k = 0 entry is set
         # to zero; the projection leaves the mean flow untouched anyway.
@@ -131,11 +137,11 @@ class NavierStokes:
         """
         Total (or masked) spectral energy of the velocity field via Parseval's
         theorem. The factor of two accounts for the half-complex (r2c) storage;
-        the kx = 0 plane is not doubled.
+        the kx = 0 and kx = Nyquist planes are self-conjugate and counted once.
         """
         p = 2 * np.sum(np.real(u_cqks * np.conj(u_cqks)), axis=0)
-        p[self._zero_wavevectorx_qks] -= np.sum(
-            np.real(u_cqks[:, self._zero_wavevectorx_qks] * np.conj(u_cqks[:, self._zero_wavevectorx_qks])), axis=0)
+        once = self._kx_counted_once_qks
+        p[once] -= np.sum(np.real(u_cqks[:, once] * np.conj(u_cqks[:, once])), axis=0)
         if mask is None:
             return self._parnp.sum(p) / self._fft.normalisation
         else:

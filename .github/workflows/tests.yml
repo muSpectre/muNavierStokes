@@ -1,0 +1,107 @@
+name: Tests
+
+on:
+  push:
+    branches: ['**']
+    tags: ['**']
+  pull_request:
+    branches: ['**']
+  schedule:
+    - cron: "0 3 * * 1"
+
+jobs:
+  tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.10', '3.12']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install system dependencies (MPI + NetCDF)
+        run: |
+          sudo apt-get update -qy
+          sudo apt-get install -y \
+            cmake ninja-build \
+            openmpi-bin libopenmpi-dev \
+            libnetcdf-dev libpnetcdf-dev
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install numpy
+          # Build mpi4py against the system MPI
+          CC=mpicc pip install --no-binary mpi4py mpi4py
+          pip install NuMPI netCDF4 muTimer pytest pytest-cov
+          # muGrid is not yet on PyPI with the FFTEngine; build it from source.
+          # MPI and NetCDF auto-enable because their dev libraries are present;
+          # eigen/pybind11/dlpack are pulled by CMake FetchContent.
+          pip install -v "muGrid @ git+https://github.com/muSpectre/muGrid.git"
+          pip list
+
+      - name: Run tests with coverage
+        run: |
+          pytest tests/ --cov --cov-report=xml --cov-report=term-missing -v
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: ./coverage.xml
+          flags: python-${{ matrix.python-version }}
+          fail_ci_if_error: false
+
+  mpi:
+    # Verifies the solver runs under MPI and that a parallel run reproduces the
+    # serial result (the Taylor-Green initial condition is deterministic across
+    # ranks, unlike the seeded-random turbulence one).
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install system dependencies (MPI + NetCDF)
+        run: |
+          sudo apt-get update -qy
+          sudo apt-get install -y \
+            cmake ninja-build \
+            openmpi-bin libopenmpi-dev \
+            libnetcdf-dev libpnetcdf-dev
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install numpy
+          CC=mpicc pip install --no-binary mpi4py mpi4py
+          pip install NuMPI netCDF4 muTimer
+          pip install -v "muGrid @ git+https://github.com/muSpectre/muGrid.git"
+
+      - name: Serial vs. parallel consistency
+        run: |
+          python simulate.py -i taylor-green -n 16 16 16 -N 5 \
+            --dump-interval 2 --screen-interval 100 -o serial.nc
+          mpirun --oversubscribe -np 2 python simulate.py -i taylor-green \
+            -n 16 16 16 -N 5 --dump-interval 2 --screen-interval 100 -o parallel.nc
+          python - <<'PY'
+          import netCDF4, numpy as np
+          a = netCDF4.Dataset("serial.nc").variables["velocity"][:]
+          b = netCDF4.Dataset("parallel.nc").variables["velocity"][:]
+          assert a.shape == b.shape, (a.shape, b.shape)
+          np.testing.assert_allclose(a, b, rtol=1e-6, atol=1e-9)
+          print(f"serial == parallel on {a.shape[0]} frames (max abs diff "
+                f"{np.max(np.abs(a - b)):.2e})")
+          PY

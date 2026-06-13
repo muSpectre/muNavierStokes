@@ -3,10 +3,9 @@
 Pseudo-spectral direct numerical simulation (DNS) of the incompressible
 Navier-Stokes equations.
 
-This single entry point replaces the former per-milestone scripts. It runs
-either a Taylor-Green vortex (the classic transition-to-turbulence benchmark)
-or forced isotropic turbulence, and streams the velocity field to a NetCDF
-file through µGrid. It runs serially or under MPI:
+This single entry point runs either a Taylor-Green vortex (the classic
+transition-to-turbulence benchmark) or forced isotropic turbulence, and streams
+the velocity field to a NetCDF file through µGrid. It runs serially or under MPI:
 
     python simulate.py --initial-condition taylor-green -n 64 64 64
     mpirun -np 4 python simulate.py --initial-condition turbulence
@@ -17,7 +16,6 @@ import time
 
 import numpy as np
 from mpi4py import MPI
-
 from muGrid import FileIONetCDF, OpenMode
 
 from muNavierStokes import NavierStokes, rk4
@@ -27,15 +25,25 @@ PHYSICAL_SIZE = (1, 1, 1)
 
 
 def taylor_green(ns, amplitude):
-    """Taylor-Green vortex. Returns the Fourier-space velocity field."""
+    """Taylor-Green vortex. Returns the Fourier-space velocity field.
+
+    The z-amplitude is -2 so that the field is divergence-free: for the
+    cos/sin/sin, sin/cos/sin, sin/sin/cos structure with equal wavenumbers the
+    component amplitudes must sum to zero (1 + 1 - 2 = 0).
+    """
     x, y, z = ns.fft.coords
-    u_cxyz = ns.fft.real_space_field('velocity', 3)
-    u_cxyz.p[...] = amplitude * np.array([
-        np.cos(2 * np.pi * x) * np.sin(2 * np.pi * y) * np.sin(2 * np.pi * z),
-        np.sin(2 * np.pi * x) * np.cos(2 * np.pi * y) * np.sin(2 * np.pi * z),
-        -0.5 * np.sin(2 * np.pi * x) * np.sin(2 * np.pi * y) * np.cos(2 * np.pi * z),
-    ])
-    u_cqks = ns.fft.fourier_space_field('velocity_k', 3)
+    u_cxyz = ns.fft.real_space_field("velocity", 3)
+    u_cxyz.p[...] = amplitude * np.array(
+        [
+            np.cos(2 * np.pi * x) * np.sin(2 * np.pi * y) * np.sin(2 * np.pi * z),
+            np.sin(2 * np.pi * x) * np.cos(2 * np.pi * y) * np.sin(2 * np.pi * z),
+            -2.0
+            * np.sin(2 * np.pi * x)
+            * np.sin(2 * np.pi * y)
+            * np.cos(2 * np.pi * z),
+        ]
+    )
+    u_cqks = ns.fft.fourier_space_field("velocity_k", 3)
     ns.fft.fft(u_cxyz, u_cqks)
     return u_cqks.p * ns.fft.normalisation
 
@@ -60,27 +68,75 @@ def turbulence(ns, amplitude, seed):
     uarr_cqks = ns.to_incompressible(uarr_cqks)
 
     freeze_wavevector = 2 * np.pi * 3 / np.mean(PHYSICAL_SIZE)
-    freeze_mask = (k_sq < freeze_wavevector ** 2) & nonzero
+    freeze_mask = (k_sq < freeze_wavevector**2) & nonzero
     return uarr_cqks, freeze_mask, uarr_cqks[:, freeze_mask].copy()
 
 
 def parse_args():
     p = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument('--initial-condition', '-i', choices=['taylor-green', 'turbulence'],
-                   default='taylor-green', help='initial condition (default: taylor-green)')
-    p.add_argument('--nb-grid-pts', '-n', type=int, nargs=3, metavar=('NX', 'NY', 'NZ'),
-                   default=[32, 32, 32], help='grid resolution (default: 32 32 32)')
-    p.add_argument('--viscosity', '-v', type=float, default=1 / 1600,
-                   help='kinematic viscosity (default: 1/1600)')
-    p.add_argument('--timestep', '-t', type=float, default=1e-3, help='time step (default: 1e-3)')
-    p.add_argument('--nb-steps', '-N', type=int, default=100000, help='number of steps (default: 100000)')
-    p.add_argument('--amplitude', '-a', type=float, default=1.0, help='velocity amplitude (default: 1)')
-    p.add_argument('--no-dealias', action='store_true', help='disable 2/3-rule dealiasing')
-    p.add_argument('--seed', type=int, default=None, help='RNG seed for the turbulence initial condition')
-    p.add_argument('--output', '-o', default='navier_stokes.nc', help='NetCDF output file')
-    p.add_argument('--dump-interval', type=int, default=100, help='write velocity every N steps')
-    p.add_argument('--screen-interval', type=int, default=100, help='report to screen every N steps')
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    p.add_argument(
+        "--initial-condition",
+        "-i",
+        choices=["taylor-green", "turbulence"],
+        default="taylor-green",
+        help="initial condition (default: taylor-green)",
+    )
+    p.add_argument(
+        "--nb-grid-pts",
+        "-n",
+        type=int,
+        nargs=3,
+        metavar=("NX", "NY", "NZ"),
+        default=[32, 32, 32],
+        help="grid resolution (default: 32 32 32)",
+    )
+    p.add_argument(
+        "--viscosity",
+        "-v",
+        type=float,
+        default=1 / 1600,
+        help="kinematic viscosity (default: 1/1600)",
+    )
+    p.add_argument(
+        "--timestep", "-t", type=float, default=1e-3, help="time step (default: 1e-3)"
+    )
+    p.add_argument(
+        "--nb-steps",
+        "-N",
+        type=int,
+        default=100000,
+        help="number of steps (default: 100000)",
+    )
+    p.add_argument(
+        "--amplitude",
+        "-a",
+        type=float,
+        default=1.0,
+        help="velocity amplitude (default: 1)",
+    )
+    p.add_argument(
+        "--no-dealias", action="store_true", help="disable 2/3-rule dealiasing"
+    )
+    p.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="RNG seed for the turbulence initial condition",
+    )
+    p.add_argument(
+        "--output", "-o", default="navier_stokes.nc", help="NetCDF output file"
+    )
+    p.add_argument(
+        "--dump-interval", type=int, default=100, help="write velocity every N steps"
+    )
+    p.add_argument(
+        "--screen-interval",
+        type=int,
+        default=100,
+        help="report to screen every N steps",
+    )
     return p.parse_args()
 
 
@@ -89,32 +145,45 @@ def main():
     comm = MPI.COMM_WORLD
     rank = comm.Get_rank()
 
-    ns = NavierStokes(tuple(args.nb_grid_pts), PHYSICAL_SIZE, args.viscosity,
-                      dealias=not args.no_dealias, communicator=comm)
+    ns = NavierStokes(
+        tuple(args.nb_grid_pts),
+        PHYSICAL_SIZE,
+        args.viscosity,
+        dealias=not args.no_dealias,
+        communicator=comm,
+    )
 
     # Initial condition (turbulence additionally provides the forcing mask)
     forcing = None
-    if args.initial_condition == 'taylor-green':
+    if args.initial_condition == "taylor-green":
         uarr_cqks = taylor_green(ns, args.amplitude)
     else:
         uarr_cqks, freeze_mask, frozen = turbulence(ns, args.amplitude, args.seed)
         forcing = (freeze_mask, frozen)
 
     # Velocity fields used to transform back to real space for output
-    velocity = ns.fft.real_space_field('velocity', 3)
-    velocity_k = ns.fft.fourier_space_field('velocity_k', 3)
+    velocity = ns.fft.real_space_field("velocity", 3)
+    velocity_k = ns.fft.fourier_space_field("velocity_k", 3)
 
     # Open the output file and register *only* the velocity field for writing
     # (the collection also holds dudt's scratch fields, which we skip).
     file = FileIONetCDF(args.output, OpenMode.Overwrite, communicator=comm)
-    file.register_field_collection(ns.fft.real_space_collection, field_names=['velocity'])
+    file.register_field_collection(
+        ns.fft.real_space_collection, field_names=["velocity"]
+    )
 
     if rank == 0:
-        print(f'# {ns.fft.backend_name} FFT engine, grid {tuple(args.nb_grid_pts)}, '
-              f'nu = {args.viscosity:g}, dealias = {not args.no_dealias}, '
-              f'IC = {args.initial_condition}', flush=True)
-        print('#    step        time        min /      mean /       max'
-              '          power     frames/s', flush=True)
+        print(
+            f"# {ns.fft.backend_name} FFT engine, grid {tuple(args.nb_grid_pts)}, "
+            f"nu = {args.viscosity:g}, dealias = {not args.no_dealias}, "
+            f"IC = {args.initial_condition}",
+            flush=True,
+        )
+        print(
+            "#    step        time        min /      mean /       max"
+            "          power     frames/s",
+            flush=True,
+        )
 
     last_time = None
     for n in range(args.nb_steps):
@@ -126,9 +195,16 @@ def main():
             umax = ns.parnp.max(velocity.p)
             power = ns.power(uarr_cqks)
             if rank == 0:
-                fps = '' if last_time is None else f'{args.screen_interval / (time.time() - last_time):11.4g}'
-                print(f'{n:9d} {n * args.timestep:11.4g}   {umin:9.3g} / {umean:9.3g} / '
-                      f'{umax:9.3g}   {power:12.5g} {fps}', flush=True)
+                fps = (
+                    ""
+                    if last_time is None
+                    else f"{args.screen_interval / (time.time() - last_time):11.4g}"
+                )
+                print(
+                    f"{n:9d} {n * args.timestep:11.4g}   {umin:9.3g} / {umean:9.3g} / "
+                    f"{umax:9.3g}   {power:12.5g} {fps}",
+                    flush=True,
+                )
             last_time = time.time()
 
         # Integrate one step
@@ -148,5 +224,5 @@ def main():
     file.close()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

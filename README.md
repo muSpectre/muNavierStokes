@@ -1,5 +1,8 @@
 # muNavierStokes
 
+[![Tests](https://github.com/muSpectre/muNavierStokes/actions/workflows/tests.yml/badge.svg)](https://github.com/muSpectre/muNavierStokes/actions/workflows/tests.yml)
+[![codecov](https://codecov.io/gh/muSpectre/muNavierStokes/branch/main/graph/badge.svg)](https://codecov.io/gh/muSpectre/muNavierStokes)
+
 Direct numerical simulation (DNS) of the incompressible Navier–Stokes equations
 with a pseudo-spectral method. Fast Fourier transforms and the (optionally
 MPI-parallel) field storage are provided by
@@ -34,9 +37,19 @@ and tests.
 | `simulate.py`               | the simulation driver (single executable)              |
 | `muNavierStokes/`           | the solver (`NavierStokes`) and the RK4 integrator     |
 | `scripts/`                  | post-processing (slicing, plotting, spectra, decay fit)|
-| `tests/test_correctness.py` | analytic correctness checks for the solver             |
+| `tests/`                    | `pytest` correctness and functional tests              |
+
+## Testing
+
+```bash
+pytest            # run the test suite
+pytest --cov      # with a coverage report
+```
+
+Tests run in CI on every push (see `.github/workflows/tests.yml`).
 
 ## Dependencies
 
 `muGrid` (with FFT + NetCDF support), `NuMPI`, `mpi4py`, `numpy`; plus
-`matplotlib` and `netCDF4` for the post-processing scripts.
+`matplotlib` and `netCDF4` for the post-processing scripts. Install the test
+extras with `pip install -e ".[test]"`.

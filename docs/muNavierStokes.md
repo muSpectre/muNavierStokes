@@ -118,11 +118,9 @@ Key methods:
   µGrid fields (allocated once, reused every call) for the transforms.
 * **`power(u_cqks, mask=None)`** — total (or masked) spectral energy via
   Parseval's theorem, with the factor-of-2 bookkeeping of the half-complex
-  (r2c) representation. Reductions are MPI-aware through `NuMPI`. *Caveat:* for
-  **even** grid sizes the Nyquist plane (`kᵢ = N/2`) is double-counted because
-  only the `k=0` plane is corrected; the resulting error is confined to the
-  highest-frequency plane and is negligible for well-resolved fields (it is
-  exact for odd grid sizes).
+  (r2c) representation. Both self-conjugate planes — `kx = 0` and (for even Nx)
+  `kx = Nyquist` — are counted once, so the result is exact on odd *and* even
+  grids. Reductions are MPI-aware through `NuMPI`.
 * **`to_incompressible(u_cqks)`** — apply the projection `P_⊥` to make an
   arbitrary field divergence-free (used to build initial conditions).
 
@@ -141,17 +139,23 @@ NetCDF velocity output. The initial-condition helpers (`taylor_green`,
 
 ### 2.4 Verification
 
-`tests/test_correctness.py` exercises the solver against analytic references:
+The `tests/` directory holds a `pytest` suite. `test_navier_stokes.py` checks
+the solver against analytic references:
 
-* curl operator on a rigid rotation (vanishing in-plane components),
-* Parseval consistency of `power()` (exact on odd grids; the even-grid Nyquist
-  over-count is measured and explained),
-* divergence-free projection `k·u = 0`,
-* `dudt` preserves the divergence-free constraint,
+* the spectral curl operator (vanishing in-plane components of a rigid rotation),
+* `to_incompressible` and `dudt` are divergence-free (`k·u = 0`),
+* `power()` equals the real-space energy on **odd and even** grids (the latter
+  exercises the Nyquist-plane correction), and the mask partitions the total,
 * the 2D Taylor–Green vortex decays at the analytic rate `2ν(2π)²`,
-* dealiasing zeroes the cut-band of the nonlinear term.
+* dealiasing zeroes the cut-band **and** reproduces a zero-padded, alias-free
+  reference on the retained modes to machine precision (the definitive 2/3-rule
+  check),
+* energy is conserved at `ν = 0`, incompressibility is preserved during
+  integration, and `rk4` exhibits fourth-order convergence.
 
-Run it with the µGrid build on the path (see §4).
+`test_simulate.py` covers the driver: the initial-condition helpers (the
+Taylor–Green field is verified divergence-free) and an end-to-end run whose
+NetCDF output is checked to contain only the `velocity` field. See §4.4.
 
 ---
 
@@ -257,18 +261,27 @@ All scripts read the `velocity` variable written by `simulate.py`.
 
 ### 4.4 Running the test suite
 
+With muGrid importable, run `pytest` from the repository root:
+
 ```bash
-PYTHONPATH="<muGrid>/build/language_bindings/python:<muGrid>/language_bindings/python" \
-    python tests/test_correctness.py
+pytest                      # run the suite
+pytest --cov                # with a coverage report
 ```
+
+Configuration lives in `pyproject.toml` (`pytest` adds the repository root to
+the path; coverage measures `muNavierStokes` and `simulate`). The suite runs in
+CI via GitHub Actions (`.github/workflows/tests.yml`) on every push: a matrix of
+Python versions runs `pytest` with coverage (uploaded to Codecov), and a
+separate job verifies that a 2-rank MPI run reproduces the serial result.
 
 ---
 
 ## 5. Notes & possible improvements
 
-* **`power()` Nyquist plane.** As noted in §2.1, the half-complex energy sum
-  double-counts the Nyquist plane for even grids. If an exact diagnostic on
-  even grids is needed, also subtract the `|kᵢ| = N/2` planes.
 * **Forcing.** The `turbulence` initial condition forces the flow by re-imposing
   fixed low-wavenumber amplitudes after every step. This is a simple, robust
   scheme; a constant-energy-injection forcing would be a natural extension.
+* **MPI reproducibility.** The seeded-random `turbulence` initial condition is
+  generated per rank, so a parallel run does not reproduce the serial field
+  bit-for-bit (the Taylor–Green one, built from coordinates, does). A
+  domain-decomposition-independent seeding would restore that.
