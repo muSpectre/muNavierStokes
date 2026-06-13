@@ -1,9 +1,18 @@
+[build-system]
+requires = ["flit_core >=3.4,<4"]
+build-backend = "flit_core.buildapi"
+
 [project]
 name = "muNavierStokes"
-version = "0.1.0"
-description = "Pseudo-spectral direct numerical simulation of the incompressible Navier-Stokes equations on top of muGrid"
+authors = [
+    { name = "Lars Pastewka", email = "lars.pastewka@imtek.uni-freiburg.de" },
+]
 readme = "README.md"
+license = { file = "LICENSE" }
 requires-python = ">=3.10"
+# version (from __version__) and description (from the module docstring) are
+# read by flit from muNavierStokes/__init__.py.
+dynamic = ["version", "description"]
 dependencies = [
     "numpy",
     "muGrid",
@@ -17,6 +26,12 @@ test = [
     "pytest-cov",
     "netCDF4",
 ]
+
+[project.urls]
+repository = "https://github.com/muSpectre/muNavierStokes"
+
+[tool.flit.module]
+name = "muNavierStokes"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
