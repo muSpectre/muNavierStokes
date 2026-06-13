@@ -10,7 +10,7 @@ if os.path.exists('navier_stokes_slice.nc'):
 else:
     file = Dataset('navier_stokes.nc', 'r')
 
-u_fcsxyz = file.variables['u_cxyz']
+u_fcsxyz = file.variables['velocity']
 
 fig = plt.figure()
 data = u_fcsxyz[-1]

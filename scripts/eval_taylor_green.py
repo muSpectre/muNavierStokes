@@ -9,7 +9,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
 
-from muFFT import FFT
 from netCDF4 import Dataset
 
 nb_bins = 20
@@ -20,12 +19,7 @@ plt.figure()
 
 ampl = []
 with Dataset('navier_stokes.nc', 'r') as file:
-    nb_grid_pts = (file.dimensions['nx'].size, file.dimensions['ny'].size, file.dimensions['nz'].size)
-    fft = FFT(nb_grid_pts, engine='pocketfft')
-    grid_spacing = np.array(physical_size) / np.array(nb_grid_pts)
-
-    for frame, u_csxyz in enumerate(file.variables['u_cxyz']):
-        data = u_csxyz[0]
+    for frame, u_csxyz in enumerate(file.variables['velocity']):
         ampl += [u_csxyz.max()]
 
 t = np.arange(len(ampl)) * timestep

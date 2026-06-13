@@ -1,46 +1,76 @@
+"""
+Pseudo-spectral solver for the incompressible Navier-Stokes equations.
+
+The solver works in the rotational form of the incompressible Navier-Stokes
+equation and integrates the Fourier representation of the velocity field in
+time. All fast Fourier transforms and the underlying (optionally MPI-parallel)
+data layout are provided by µGrid's :class:`muGrid.FFTEngine`.
+
+Notes on the µGrid field interface
+----------------------------------
+* Fields are obtained from the engine with ``real_space_field(name, ncomp)``
+  and ``fourier_space_field(name, ncomp)``. Repeated calls with the same name
+  return the *same* field (and hence reuse the same memory).
+* The numpy view of a field is exposed through the ``.p`` (pixel layout)
+  property. This view is writable in place (``field.p[...] = value``) but the
+  property itself has no setter, so plain assignment (``field.p = value``) is
+  not possible.
+"""
+
 import numpy as np
 
 from NuMPI.Tools import Reduction
 
-from muFFT import FFT
+from muGrid import FFTEngine
 
 
 class NavierStokes:
-    def __init__(self, nb_grid_pts, physical_size=(1, 1, 1), viscosity=0.001, dealias=True, engine='mpi',
-                 communicator=None):
+    def __init__(self, nb_grid_pts, physical_size=(1, 1, 1), viscosity=0.001, dealias=True, communicator=None):
         self._nb_grid_pts = nb_grid_pts
         self._physical_size = physical_size
         self._viscosity = viscosity
         self._dealias = dealias
-        self._engine = engine
         self._communicator = communicator
 
         self._init_fft()
 
     def _init_fft(self):
-        # Initialize helper variables
+        # Parallel reduction helper and grid spacing
         self._parnp = Reduction(self._communicator)
         self._grid_spacing = np.array(self._physical_size) / np.array(self._nb_grid_pts)
 
-        # Create FFT engine
-        self._fft = FFT(self._nb_grid_pts, engine=self._engine, communicator=self._communicator)
+        # FFT engine (µGrid selects PocketFFT on the CPU, cuFFT/rocFFT on the GPU)
+        self._fft = FFTEngine(self._nb_grid_pts, communicator=self._communicator)
 
-        # Pre-compute wavevectors
+        # Angular wavevectors k = 2 pi * fftfreq / dx, shape (3, *fourier_subdomain)
         self._wavevector_cqks = (2 * np.pi * self._fft.fftfreq.T / self._grid_spacing).T
-        self._zero_wavevector_qks = (self._wavevector_cqks.T == np.zeros(3, dtype=int)).T.all(axis=0)
-        self._zero_wavevectorx_qks = self._wavevector_cqks[0] == 0
-        self._wavevector_sq_qks = np.sum(self._wavevector_cqks ** 2, axis=0)
-        self._wavevector0_sq_qks = self._wavevector_sq_qks.copy()
-        self._wavevector0_sq_qks[self._zero_wavevector_qks] = 1.0  # to avoid divide by zero
-        self._inv_wavevector_cqks = self._wavevector_cqks / self._wavevector0_sq_qks  # k / |k|^2
+        self._wavevector_sq_qks = np.sum(self._wavevector_cqks ** 2, axis=0)  # |k|^2
+        self._zero_wavevector_qks = self._wavevector_sq_qks == 0  # the k = 0 mode
+        self._zero_wavevectorx_qks = self._wavevector_cqks[0] == 0  # the kx = 0 plane
 
-        # Dealiasing field and frozen wavevectors
-        self._dealias_wavevector_c = 2 * np.pi / (3 * self._grid_spacing)
-        self._dealias_qks = np.all((np.abs(self._wavevector_cqks).T < self._dealias_wavevector_c).T, axis=0)
+        # k / |k|^2 for the pressure (Leray) projection. The k = 0 entry is set
+        # to zero; the projection leaves the mean flow untouched anyway.
+        nonzero_sq_qks = np.where(self._zero_wavevector_qks, 1.0, self._wavevector_sq_qks)
+        self._inv_wavevector_cqks = self._wavevector_cqks / nonzero_sq_qks
+
+        # 2/3-rule dealiasing mask: True for the retained (lower 2/3) modes
+        cutoff = 2 * np.pi / (3 * self._grid_spacing)
+        self._dealias_qks = np.all((np.abs(self._wavevector_cqks).T < cutoff).T, axis=0)
 
     @property
     def fft(self):
+        """The underlying :class:`muGrid.FFTEngine`."""
         return self._fft
+
+    @property
+    def parnp(self):
+        """Parallel reduction helper (MPI-aware ``min``/``max``/``mean``/``sum``)."""
+        return self._parnp
+
+    @property
+    def wavevector_sq(self):
+        """Squared wavevector magnitude ``|k|^2`` (Fourier-space array)."""
+        return self._wavevector_sq_qks
 
     def dudt(self, t, uarr_cqks):
         """
@@ -68,27 +98,41 @@ class NavierStokes:
         ucurlu_cqks = self._fft.fourier_space_field('ucurlu_cqks', 3)
         ucurlu_cxyz = self._fft.real_space_field('ucurlu_cxyz', 3)
 
-        # Copy numpy array to field
-        u_cqks.p = uarr_cqks
+        # Copy numpy array to field (in-place; µGrid's `.p` has no setter)
+        u_cqks.p[...] = uarr_cqks
 
-        # Compute u x (nabla x u) = u x (curl u)
-        curlu_cqks.p = np.cross(self._wavevector_cqks * 1j, u_cqks.p, axis=0)
-        self._fft.ifft(curlu_cqks, curlu_cxyz)
-        self._fft.ifft(u_cqks, u_cxyz)
-        ucurlu_cxyz.p = np.cross(u_cxyz.p, curlu_cxyz.p, axis=0)
-        self._fft.fft(ucurlu_cxyz, ucurlu_cqks)
-        # Multiply result with dealiasing field to eliminate Gibbs ringing
+        # Compute the vorticity (curl) in Fourier space: omega = i k x u
+        curlu_cqks.p[...] = np.cross(self._wavevector_cqks * 1j, u_cqks.p, axis=0)
+        # 2/3-rule dealiasing: band-limit the velocity and vorticity to the
+        # lower 2/3 of the spectrum *before* forming the nonlinear product in
+        # real space. This keeps the aliasing error generated by the quadratic
+        # product out of the resolved modes.
         if self._dealias:
-            ucurlu_cqks.p *= self._fft.normalisation * self._dealias_qks
-        else:
-            ucurlu_cqks.p *= self._fft.normalisation
+            u_cqks.p[...] *= self._dealias_qks
+            curlu_cqks.p[...] *= self._dealias_qks
+        self._fft.ifft(u_cqks, u_cxyz)
+        self._fft.ifft(curlu_cqks, curlu_cxyz)
+        ucurlu_cxyz.p[...] = np.cross(u_cxyz.p, curlu_cxyz.p, axis=0)
+        self._fft.fft(ucurlu_cxyz, ucurlu_cqks)
+        ucurlu_cqks.p[...] *= self._fft.normalisation
+        # Discard the aliased high-wavenumber band of the nonlinear term so that
+        # no spurious energy is injected into the cut-off modes (they then only
+        # experience viscous decay).
+        if self._dealias:
+            ucurlu_cqks.p[...] *= self._dealias_qks
 
-        # Navier-Stokes equation
+        # Navier-Stokes equation: u x omega - nu k^2 u, projected onto the
+        # divergence-free subspace (the last term is the pressure projection).
         return ucurlu_cqks.p \
             - self._viscosity * self._wavevector_sq_qks * uarr_cqks \
             - self._wavevector_cqks * np.sum(self._inv_wavevector_cqks * ucurlu_cqks.p, axis=0)
 
     def power(self, u_cqks, mask=None):
+        """
+        Total (or masked) spectral energy of the velocity field via Parseval's
+        theorem. The factor of two accounts for the half-complex (r2c) storage;
+        the kx = 0 plane is not doubled.
+        """
         p = 2 * np.sum(np.real(u_cqks * np.conj(u_cqks)), axis=0)
         p[self._zero_wavevectorx_qks] -= np.sum(
             np.real(u_cqks[:, self._zero_wavevectorx_qks] * np.conj(u_cqks[:, self._zero_wavevectorx_qks])), axis=0)
@@ -97,10 +141,6 @@ class NavierStokes:
         else:
             return self._parnp.sum(p[mask]) / self._fft.normalisation
 
-    def freeze_long_wavelength_amplitudes(self, u_cqks, target_power):
-        p = self._power(u_cqks, self._freeze_mask)
-        u_cqks[:, self._zero_wavevector_qks] = 0
-        u_cqks[:, self._freeze_mask] *= np.sqrt(target_power / p)
-
     def to_incompressible(self, u_cqks):
+        """Project a Fourier-space velocity field onto the divergence-free subspace."""
         return u_cqks - np.sum(u_cqks * self._wavevector_cqks, axis=0) * self._inv_wavevector_cqks
