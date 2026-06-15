@@ -15,53 +15,92 @@ Notes on the µGrid field interface
   property. This view is writable in place (``field.p[...] = value``) but the
   property itself has no setter, so plain assignment (``field.p = value``) is
   not possible.
+
+GPU support
+-----------
+The solver is written to run on either CPU or GPU. µGrid field buffers
+(``field.p``) are numpy arrays on the CPU and CuPy arrays on the GPU. To stay
+agnostic, the solver
+
+* keeps all precomputed coefficient arrays (wavevectors, masks) on the *same*
+  device as the field buffers (``self._xp``, set from the engine's device), and
+* uses array *methods* (``.sum()``, ``.conj()``, ``.real``) and the array
+  module (``self._xp.cross``) rather than the ``numpy`` free functions, which
+  would otherwise force host execution or host/device mixing.
+
+Pass ``device="cuda"`` (or ``"cuda:N"``) to run on the GPU.
 """
 
 import numpy as np
 
-from NuMPI.Tools import Reduction
-
-from muGrid import FFTEngine
+from muGrid import Communicator, FFTEngine
 
 
 class NavierStokes:
-    def __init__(self, nb_grid_pts, physical_size=(1, 1, 1), viscosity=0.001, dealias=True, communicator=None):
+    def __init__(self, nb_grid_pts, physical_size=(1, 1, 1), viscosity=0.001, dealias=True,
+                 communicator=None, device=None):
         self._nb_grid_pts = nb_grid_pts
         self._physical_size = physical_size
         self._viscosity = viscosity
         self._dealias = dealias
         self._communicator = communicator
+        self._device = device
 
         self._init_fft()
 
     def _init_fft(self):
-        # Parallel reduction helper and grid spacing
-        self._parnp = Reduction(self._communicator)
+        # Parallel reduction helper and grid spacing. muGrid's communicator
+        # provides GPU-aware, full-array global reductions (sum/min/max/mean)
+        # via its `.reduction` adapter, replacing NuMPI's numpy-only Reduction.
+        self._parnp = Communicator(self._communicator).reduction
         self._grid_spacing = np.array(self._physical_size) / np.array(self._nb_grid_pts)
 
         # FFT engine (µGrid selects PocketFFT on the CPU, cuFFT/rocFFT on the GPU)
-        self._fft = FFTEngine(self._nb_grid_pts, communicator=self._communicator)
+        self._fft = FFTEngine(self._nb_grid_pts, communicator=self._communicator, device=self._device)
 
-        # Angular wavevectors k = 2 pi * fftfreq / dx, shape (3, *fourier_subdomain)
-        self._wavevector_cqks = (2 * np.pi * self._fft.fftfreq.T / self._grid_spacing).T
-        self._wavevector_sq_qks = np.sum(self._wavevector_cqks ** 2, axis=0)  # |k|^2
-        self._zero_wavevector_qks = self._wavevector_sq_qks == 0  # the k = 0 mode
+        # Array module (numpy on the CPU, cupy on the GPU) of the field buffers.
+        # All coefficient arrays below are moved to this device so that the
+        # element-wise operations in `dudt` never mix host and device memory.
+        self._xp = self._array_module()
+
+        # Angular wavevectors k = 2 pi * fftfreq / dx, shape (3, *fourier_subdomain).
+        # fftfreq is always a host (numpy) array, so build on the host first.
+        wavevector_cqks = (2 * np.pi * self._fft.fftfreq.T / self._grid_spacing).T
+        wavevector_sq_qks = np.sum(wavevector_cqks ** 2, axis=0)  # |k|^2
+        zero_wavevector_qks = wavevector_sq_qks == 0  # the k = 0 mode
 
         # The half-complex (r2c) transform stores only kx in [0, N/2]. Modes
         # with 0 < kx < N/2 stand in for a +/- pair and are counted twice in the
         # energy sum, while the kx = 0 plane and (for even Nx) the kx = Nyquist
         # plane are their own Hermitian conjugates and must be counted once.
         absfreqx_qks = np.abs(self._fft.fftfreq[0])
-        self._kx_counted_once_qks = (absfreqx_qks == 0) | (absfreqx_qks == 0.5)
+        kx_counted_once_qks = (absfreqx_qks == 0) | (absfreqx_qks == 0.5)
 
         # k / |k|^2 for the pressure (Leray) projection. The k = 0 entry is set
         # to zero; the projection leaves the mean flow untouched anyway.
-        nonzero_sq_qks = np.where(self._zero_wavevector_qks, 1.0, self._wavevector_sq_qks)
-        self._inv_wavevector_cqks = self._wavevector_cqks / nonzero_sq_qks
+        nonzero_sq_qks = np.where(zero_wavevector_qks, 1.0, wavevector_sq_qks)
+        inv_wavevector_cqks = wavevector_cqks / nonzero_sq_qks
 
         # 2/3-rule dealiasing mask: True for the retained (lower 2/3) modes
         cutoff = 2 * np.pi / (3 * self._grid_spacing)
-        self._dealias_qks = np.all((np.abs(self._wavevector_cqks).T < cutoff).T, axis=0)
+        dealias_qks = np.all((np.abs(wavevector_cqks).T < cutoff).T, axis=0)
+
+        # Move the arrays used at run time onto the compute device (a no-op on
+        # the CPU, where `self._xp is numpy`).
+        self._wavevector_cqks = self._xp.asarray(wavevector_cqks)
+        self._wavevector_sq_qks = self._xp.asarray(wavevector_sq_qks)
+        self._inv_wavevector_cqks = self._xp.asarray(inv_wavevector_cqks)
+        self._dealias_qks = self._xp.asarray(dealias_qks)
+        self._kx_counted_once_qks = self._xp.asarray(kx_counted_once_qks)
+        self._zero_wavevector_qks = zero_wavevector_qks  # host only (unused at run time)
+
+    def _array_module(self):
+        """Return the array module (numpy or cupy) of this engine's fields."""
+        probe = self._fft.fourier_space_field('_array_module_probe', 1)
+        if probe.is_on_gpu:
+            import cupy
+            return cupy
+        return np
 
     @property
     def fft(self):
@@ -72,6 +111,11 @@ class NavierStokes:
     def parnp(self):
         """Parallel reduction helper (MPI-aware ``min``/``max``/``mean``/``sum``)."""
         return self._parnp
+
+    @property
+    def array_module(self):
+        """The array module (numpy or cupy) of the solver's fields."""
+        return self._xp
 
     @property
     def wavevector_sq(self):
@@ -96,6 +140,8 @@ class NavierStokes:
         array_like
             The time derivative of the Fourier-representation of the velocity field.
         """
+        xp = self._xp
+
         # Get fields; this will reuse the same memory upon every call
         u_cqks = self._fft.fourier_space_field('u_cqks', 3)
         u_cxyz = self._fft.real_space_field('u_cxyz', 3)
@@ -108,7 +154,7 @@ class NavierStokes:
         u_cqks.p[...] = uarr_cqks
 
         # Compute the vorticity (curl) in Fourier space: omega = i k x u
-        curlu_cqks.p[...] = np.cross(self._wavevector_cqks * 1j, u_cqks.p, axis=0)
+        curlu_cqks.p[...] = xp.cross(self._wavevector_cqks * 1j, u_cqks.p, axis=0)
         # 2/3-rule dealiasing: band-limit the velocity and vorticity to the
         # lower 2/3 of the spectrum *before* forming the nonlinear product in
         # real space. This keeps the aliasing error generated by the quadratic
@@ -118,7 +164,7 @@ class NavierStokes:
             curlu_cqks.p[...] *= self._dealias_qks
         self._fft.ifft(u_cqks, u_cxyz)
         self._fft.ifft(curlu_cqks, curlu_cxyz)
-        ucurlu_cxyz.p[...] = np.cross(u_cxyz.p, curlu_cxyz.p, axis=0)
+        ucurlu_cxyz.p[...] = xp.cross(u_cxyz.p, curlu_cxyz.p, axis=0)
         self._fft.fft(ucurlu_cxyz, ucurlu_cqks)
         ucurlu_cqks.p[...] *= self._fft.normalisation
         # Discard the aliased high-wavenumber band of the nonlinear term so that
@@ -131,7 +177,7 @@ class NavierStokes:
         # divergence-free subspace (the last term is the pressure projection).
         return ucurlu_cqks.p \
             - self._viscosity * self._wavevector_sq_qks * uarr_cqks \
-            - self._wavevector_cqks * np.sum(self._inv_wavevector_cqks * ucurlu_cqks.p, axis=0)
+            - self._wavevector_cqks * (self._inv_wavevector_cqks * ucurlu_cqks.p).sum(axis=0)
 
     def power(self, u_cqks, mask=None):
         """
@@ -139,9 +185,9 @@ class NavierStokes:
         theorem. The factor of two accounts for the half-complex (r2c) storage;
         the kx = 0 and kx = Nyquist planes are self-conjugate and counted once.
         """
-        p = 2 * np.sum(np.real(u_cqks * np.conj(u_cqks)), axis=0)
+        p = 2 * (u_cqks * u_cqks.conj()).real.sum(axis=0)
         once = self._kx_counted_once_qks
-        p[once] -= np.sum(np.real(u_cqks[:, once] * np.conj(u_cqks[:, once])), axis=0)
+        p[once] -= (u_cqks[:, once] * u_cqks[:, once].conj()).real.sum(axis=0)
         if mask is None:
             return self._parnp.sum(p) / self._fft.normalisation
         else:
@@ -149,4 +195,4 @@ class NavierStokes:
 
     def to_incompressible(self, u_cqks):
         """Project a Fourier-space velocity field onto the divergence-free subspace."""
-        return u_cqks - np.sum(u_cqks * self._wavevector_cqks, axis=0) * self._inv_wavevector_cqks
+        return u_cqks - (u_cqks * self._wavevector_cqks).sum(axis=0) * self._inv_wavevector_cqks

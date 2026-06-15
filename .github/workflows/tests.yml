@@ -107,3 +107,63 @@ jobs:
           print(f"serial == parallel on {a.shape[0]} frames (max abs diff "
                 f"{np.max(np.abs(a - b)):.2e})")
           PY
+
+  gpu:
+    # Runs the device tests (tests/test_gpu.py) on a CUDA runner. muGrid is
+    # rebuilt from source with CUDA enabled so its GPU-aware Communicator
+    # (the sum/min/max/mean reductions behind `ns.parnp` and `power`) and FFT
+    # engine actually execute on the device. The same tests auto-skip in the
+    # CPU `tests` job above when no GPU/CuPy is present. GPU runners are scarce,
+    # so this job only runs on `main` and tags, mirroring muGrid's GPU CI.
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')
+    runs-on: linux-x86-cuda
+    timeout-minutes: 60
+
+    strategy:
+      matrix:
+        python-version: ['3.10']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install CUDA Toolkit
+        uses: Jimver/cuda-toolkit@v0.2.35
+        id: cuda-toolkit
+        with:
+          cuda: '12.6.3'
+          method: 'network'
+          sub-packages: '["nvcc", "cudart-dev", "nvrtc-dev"]'
+          non-cuda-sub-packages: '["libcufft-dev", "libcublas-dev", "libcurand-dev"]'
+
+      - name: Show GPU info
+        run: |
+          nvidia-smi
+          nvcc --version
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qy
+          sudo apt-get install -y cmake ninja-build
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install numpy pytest cupy-cuda12x
+          # Build muGrid from source WITH CUDA so its GPU-aware Communicator and
+          # FFT engine run on the device. scikit-build-core forwards the CMake
+          # defines in CMAKE_ARGS. MPI and NetCDF are off for this job.
+          CMAKE_ARGS="-DMUGRID_ENABLE_CUDA=ON -DMUGRID_ENABLE_MPI=OFF -DMUGRID_ENABLE_NETCDF=OFF -DCMAKE_CUDA_ARCHITECTURES=75" \
+            pip install -v "muGrid @ git+https://github.com/muSpectre/muGrid.git"
+          # Install this package without its deps: the GPU test only imports
+          # muGrid + numpy + cupy (mpi4py/netCDF4 are not needed here).
+          pip install --no-deps -e .
+          pip list
+
+      - name: Run GPU tests
+        run: |
+          pytest tests/test_gpu.py -v -s

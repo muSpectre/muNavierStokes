@@ -31,16 +31,18 @@ def taylor_green(ns, amplitude):
     cos/sin/sin, sin/cos/sin, sin/sin/cos structure with equal wavenumbers the
     component amplitudes must sum to zero (1 + 1 - 2 = 0).
     """
-    x, y, z = ns.fft.coords
+    xp = ns.array_module
+    # coords is a host array; move it to the compute device
+    x, y, z = (xp.asarray(c) for c in ns.fft.coords)
     u_cxyz = ns.fft.real_space_field("velocity", 3)
-    u_cxyz.p[...] = amplitude * np.array(
+    u_cxyz.p[...] = amplitude * xp.array(
         [
-            np.cos(2 * np.pi * x) * np.sin(2 * np.pi * y) * np.sin(2 * np.pi * z),
-            np.sin(2 * np.pi * x) * np.cos(2 * np.pi * y) * np.sin(2 * np.pi * z),
+            xp.cos(2 * np.pi * x) * xp.sin(2 * np.pi * y) * xp.sin(2 * np.pi * z),
+            xp.sin(2 * np.pi * x) * xp.cos(2 * np.pi * y) * xp.sin(2 * np.pi * z),
             -2.0
-            * np.sin(2 * np.pi * x)
-            * np.sin(2 * np.pi * y)
-            * np.cos(2 * np.pi * z),
+            * xp.sin(2 * np.pi * x)
+            * xp.sin(2 * np.pi * y)
+            * xp.cos(2 * np.pi * z),
         ]
     )
     u_cqks = ns.fft.fourier_space_field("velocity_k", 3)
@@ -55,14 +57,16 @@ def turbulence(ns, amplitude, seed):
     amplitudes are used to force the lowest wavenumbers (excluding the mean
     flow) by re-imposing them after every time step.
     """
+    xp = ns.array_module
     shape = (3,) + ns.fft.nb_fourier_subdomain_grid_pts
-    rng = np.random.default_rng(seed)
+    # xp.random.default_rng works for both numpy and cupy
+    rng = xp.random.default_rng(seed)
     uarr_cqks = rng.standard_normal(shape) + 1j * rng.standard_normal(shape)
 
     # Energy ~ k^(-5/3) corresponds to an amplitude ~ k^(-5/6)
     k_sq = ns.wavevector_sq
     nonzero = k_sq > 0
-    factor = np.zeros_like(k_sq)
+    factor = xp.zeros_like(k_sq)
     factor[nonzero] = amplitude * k_sq[nonzero] ** (-5 / 6)
     uarr_cqks *= factor
     uarr_cqks = ns.to_incompressible(uarr_cqks)
@@ -120,6 +124,11 @@ def parse_args():
         "--no-dealias", action="store_true", help="disable 2/3-rule dealiasing"
     )
     p.add_argument(
+        "--device",
+        default=None,
+        help="compute device: 'cpu' (default) or 'cuda'/'cuda:N' for the GPU",
+    )
+    p.add_argument(
         "--seed",
         type=int,
         default=None,
@@ -151,6 +160,7 @@ def main():
         args.viscosity,
         dealias=not args.no_dealias,
         communicator=comm,
+        device=args.device,
     )
 
     # Initial condition (turbulence additionally provides the forcing mask)
@@ -190,10 +200,12 @@ def main():
         if n % args.screen_interval == 0:
             velocity_k.p[...] = uarr_cqks
             ns.fft.ifft(velocity_k, velocity)
-            umin = ns.parnp.min(velocity.p)
-            umean = ns.parnp.mean(velocity.p)
-            umax = ns.parnp.max(velocity.p)
-            power = ns.power(uarr_cqks)
+            # float() collapses 0-d numpy/cupy results to a host scalar so the
+            # formatting below works on both CPU and GPU.
+            umin = float(ns.parnp.min(velocity.p))
+            umean = float(ns.parnp.mean(velocity.p))
+            umax = float(ns.parnp.max(velocity.p))
+            power = float(ns.power(uarr_cqks))
             if rank == 0:
                 fps = (
                     ""

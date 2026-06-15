@@ -120,7 +120,7 @@ Key methods:
   Parseval's theorem, with the factor-of-2 bookkeeping of the half-complex
   (r2c) representation. Both self-conjugate planes — `kx = 0` and (for even Nx)
   `kx = Nyquist` — are counted once, so the result is exact on odd *and* even
-  grids. Reductions are MPI-aware through `NuMPI`.
+  grids. Reductions are MPI- and GPU-aware through µGrid's `Communicator`.
 * **`to_incompressible(u_cqks)`** — apply the projection `P_⊥` to make an
   arbitrary field divergence-free (used to build initial conditions).
 
@@ -203,7 +203,6 @@ the field-based form (copy into a field, transform, read `.p`).
 
 * `muGrid` (with FFT support; **≥ the version that ships `FFTEngine`**, and
   built with NetCDF for the file I/O)
-* `NuMPI` (parallel reductions)
 * `mpi4py`
 * `numpy`
 * `matplotlib`, `netCDF4` (post-processing scripts only)
@@ -273,6 +272,35 @@ the path; coverage measures `muNavierStokes` and `simulate`). The suite runs in
 CI via GitHub Actions (`.github/workflows/tests.yml`) on every push: a matrix of
 Python versions runs `pytest` with coverage (uploaded to Codecov), and a
 separate job verifies that a 2-rank MPI run reproduces the serial result.
+`tests/test_gpu.py` adds device tests that skip automatically without a GPU.
+
+### 4.5 GPU execution
+
+µGrid can place fields in GPU memory (field buffers become CuPy arrays instead
+of numpy). Pass a device to the solver or the driver:
+
+```python
+ns = NavierStokes(nb_grid_pts, viscosity=nu, device="cuda")   # or "cuda:N"
+```
+```bash
+python simulate.py --device cuda -i taylor-green
+```
+
+The solver is written to be device-agnostic:
+
+* `NavierStokes` discovers the array module (numpy or CuPy) of its fields and
+  moves every precomputed coefficient array (wavevectors, projection operator,
+  dealiasing/Nyquist masks) onto that device, so `dudt` never mixes host and
+  device memory.
+* It uses array *methods* (`.sum()`, `.conj()`, `.real`) and the array module
+  (`xp.cross`) rather than the numpy free functions, which would force host
+  execution or host/device mixing.
+* The RK4 integrator is pure array arithmetic and already device-agnostic.
+* The driver builds its initial conditions on the device (CuPy RNG and trig)
+  and collapses scalar diagnostics with `float(...)`.
+
+The caller must keep the integration array `uarr_cqks` on the same device as
+the solver (the driver does; `taylor_green`/`turbulence` return device arrays).
 
 ---
 
@@ -285,3 +313,12 @@ separate job verifies that a 2-rank MPI run reproduces the serial result.
   generated per rank, so a parallel run does not reproduce the serial field
   bit-for-bit (the Taylor–Green one, built from coordinates, does). A
   domain-decomposition-independent seeding would restore that.
+* **GPU reductions.** Reductions go through µGrid's GPU-aware `Communicator`
+  via its `.reduction` adapter (`reduce_sum`/`min`/`max`/`mean`): it reduces
+  CuPy buffers on-device and short-circuits serial runs entirely (no MPI call,
+  so no CUDA-aware MPI needed for a single rank). Multi-GPU runs still require a
+  CUDA-aware `mpi4py` for the cross-rank `Allreduce`. (This replaced the earlier
+  `NuMPI.Tools.Reduction`, which was numpy-oriented and invoked MPI even for a
+  single rank.) Remaining checks for multi-GPU: confirm `FileIONetCDF` staging
+  of device fields. The array math itself (everything in
+  `dudt`/`power`/`to_incompressible`) is device-ready.
