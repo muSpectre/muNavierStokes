@@ -314,7 +314,7 @@ the solver (the driver does; `taylor_green`/`turbulence` return device arrays).
   bit-for-bit (the Taylor–Green one, built from coordinates, does). A
   domain-decomposition-independent seeding would restore that.
 * **GPU reductions.** Reductions go through µGrid's GPU-aware `Communicator`
-  via its `.reduction` adapter (`reduce_sum`/`min`/`max`/`mean`): it reduces
+  via its `.reduction` adapter (`sum`/`min`/`max`/`mean`): it reduces
   CuPy buffers on-device and short-circuits serial runs entirely (no MPI call,
   so no CUDA-aware MPI needed for a single rank). Multi-GPU runs still require a
   CUDA-aware `mpi4py` for the cross-rank `Allreduce`. (This replaced the earlier

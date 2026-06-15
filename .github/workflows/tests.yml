@@ -45,9 +45,13 @@ jobs:
           # MPI and NetCDF auto-enable because their dev libraries are present;
           # eigen/pybind11/dlpack are pulled by CMake FetchContent.
           pip install -v "muGrid @ git+https://github.com/muSpectre/muGrid.git"
-          # Install this package (flit build backend) with its test extras;
-          # muGrid and mpi4py are already satisfied by the builds above.
-          pip install -e ".[test]"
+          # Install this package without re-resolving deps: the git-built muGrid
+          # carries a setuptools-scm dev version (< 0.109.0), so a normal install
+          # of the `muGrid>=0.109.0` pin would try to pull a release from PyPI and
+          # clobber the MPI-enabled build. numpy, mpi4py and muGrid are already
+          # present; add the [test] tools explicitly.
+          pip install --no-deps -e .
+          pip install pytest pytest-cov netCDF4
           pip list
 
       - name: Run tests with coverage
@@ -90,7 +94,10 @@ jobs:
           pip install numpy
           CC=mpicc pip install --no-binary mpi4py mpi4py
           pip install -v "muGrid @ git+https://github.com/muSpectre/muGrid.git"
-          pip install -e ".[test]"
+          # --no-deps: keep the MPI-enabled git build (its dev version would
+          # otherwise fail the muGrid>=0.109.0 pin and be replaced from PyPI).
+          pip install --no-deps -e .
+          pip install netCDF4
 
       - name: Serial vs. parallel consistency
         run: |
