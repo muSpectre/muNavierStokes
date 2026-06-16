@@ -18,7 +18,7 @@ import numpy as np
 from mpi4py import MPI
 from muGrid import FileIONetCDF, OpenMode
 
-from muNavierStokes import NavierStokes, rk4
+from muNavierStokes import NavierStokes
 
 # Box size; all wavevectors are derived from this and the grid resolution.
 PHYSICAL_SIZE = (1, 1, 1)
@@ -171,9 +171,13 @@ def main():
         uarr_cqks, freeze_mask, frozen = turbulence(ns, args.amplitude, args.seed)
         forcing = (freeze_mask, frozen)
 
-    # Velocity fields used to transform back to real space for output
+    # The integration state is a Fourier-space field, advanced in place by the
+    # field-based RK4 stepper (no per-step allocation).
+    state = ns.fft.fourier_space_field("state", 3)
+    state.p[...] = uarr_cqks
+
+    # Real-space velocity field for output (the inverse transform of `state`).
     velocity = ns.fft.real_space_field("velocity", 3)
-    velocity_k = ns.fft.fourier_space_field("velocity_k", 3)
 
     # Open the output file and register *only* the velocity field for writing
     # (the collection also holds dudt's scratch fields, which we skip).
@@ -198,14 +202,13 @@ def main():
     last_time = None
     for n in range(args.nb_steps):
         if n % args.screen_interval == 0:
-            velocity_k.p[...] = uarr_cqks
-            ns.fft.ifft(velocity_k, velocity)
+            ns.fft.ifft(state, velocity)
             # float() collapses 0-d numpy/cupy results to a host scalar so the
             # formatting below works on both CPU and GPU.
             umin = float(ns.parnp.min(velocity.p))
             umean = float(ns.parnp.mean(velocity.p))
             umax = float(ns.parnp.max(velocity.p))
-            power = float(ns.power(uarr_cqks))
+            power = float(ns.power(state.p))
             if rank == 0:
                 fps = (
                     ""
@@ -219,18 +222,17 @@ def main():
                 )
             last_time = time.time()
 
-        # Integrate one step
-        uarr_cqks += rk4(ns.dudt, n * args.timestep, uarr_cqks, args.timestep)
+        # Integrate one step (in place, on the device)
+        ns.rk4_step(state, n * args.timestep, args.timestep)
 
         # Forcing: re-impose the frozen low-wavenumber amplitudes
         if forcing is not None:
             freeze_mask, frozen = forcing
-            uarr_cqks[:, freeze_mask] = frozen
+            state.p[:, freeze_mask] = frozen
 
         # Output to file
         if n % args.dump_interval == 0:
-            velocity_k.p[...] = uarr_cqks
-            ns.fft.ifft(velocity_k, velocity)
+            ns.fft.ifft(state, velocity)
             file.append_frame().write()
 
     file.close()

@@ -193,6 +193,23 @@ def test_incompressibility_preserved_during_integration():
 # --------------------------------------------------------------------------- #
 # The RK4 integrator
 # --------------------------------------------------------------------------- #
+def test_field_rk4_step_matches_array_rk4():
+    """The in-place, field-based RK4 stepper must reproduce the array-based
+    rk4(ns.dudt, ...) to within floating-point reordering."""
+    ns = NavierStokes((16, 16, 16), (1, 1, 1), viscosity=1 / 800, dealias=True)
+    u0 = random_incompressible(ns, seed=11)
+
+    # Array path
+    y_array = u0 + rk4(ns.dudt, 0.0, u0, 1e-3)
+
+    # Field path: advance an in-place state field with the BLAS-style stepper
+    state = ns.fft.fourier_space_field("state", 3)
+    state.p[...] = u0
+    ns.rk4_step(state, 0.0, 1e-3)
+
+    np.testing.assert_allclose(state.p, y_array, rtol=1e-10, atol=1e-12)
+
+
 def test_rk4_is_fourth_order():
     """Halving the step must cut the error of dy/dt = -y by roughly 2^4 = 16."""
     def f(t, y):

@@ -16,24 +16,29 @@ Notes on the µGrid field interface
   property itself has no setter, so plain assignment (``field.p = value``) is
   not possible.
 
+Performance
+-----------
+The fields used by the right-hand side and the Runge-Kutta integrator are
+allocated once and reused (no per-step allocation or repeated ``.p`` view
+construction). Constant Fourier symbols (``i k`` and the viscous symbol
+``nu |k|^2``) are precomputed. The integrator (:meth:`rk4_step`) and the
+linear-combination parts of the right-hand side use µGrid's BLAS-like field
+operations (``copy``/``scal``/``axpy``), which are fused, in place, and run on
+host or device. The cross products and the per-pixel pressure projection are
+the only remaining element-wise array temporaries.
+
 GPU support
 -----------
-The solver is written to run on either CPU or GPU. µGrid field buffers
-(``field.p``) are numpy arrays on the CPU and CuPy arrays on the GPU. To stay
-agnostic, the solver
-
-* keeps all precomputed coefficient arrays (wavevectors, masks) on the *same*
-  device as the field buffers (``self._xp``, set from the engine's device), and
-* uses array *methods* (``.sum()``, ``.conj()``, ``.real``) and the array
-  module (``self._xp.cross``) rather than the ``numpy`` free functions, which
-  would otherwise force host execution or host/device mixing.
-
-Pass ``device="cuda"`` (or ``"cuda:N"``) to run on the GPU.
+µGrid field buffers (``field.p``) are numpy arrays on the CPU and CuPy arrays
+on the GPU. All precomputed coefficient arrays are moved to the device of the
+field buffers (``self._xp``), and array *methods* / the array module
+(``self._xp.cross``) are used instead of the numpy free functions. Pass
+``device="cuda"`` (or ``"cuda:N"``) to run on the GPU.
 """
 
 import numpy as np
 
-from muGrid import Communicator, FFTEngine
+from muGrid import Communicator, FFTEngine, linalg
 
 
 class NavierStokes:
@@ -94,6 +99,43 @@ class NavierStokes:
         self._kx_counted_once_qks = self._xp.asarray(kx_counted_once_qks)
         self._zero_wavevector_qks = zero_wavevector_qks  # host only (unused at run time)
 
+        # Precomputed constant Fourier symbols (saves an array multiply + alloc
+        # per `dudt` call): i k for the curl, and nu |k|^2 for the viscous term.
+        self._i_wavevector_cqks = 1j * self._wavevector_cqks
+
+        # Reusable scratch fields for the right-hand side, allocated once.
+        self._u_cqks = self._fft.fourier_space_field('u_cqks', 3)
+        self._u_cxyz = self._fft.real_space_field('u_cxyz', 3)
+        self._curlu_cqks = self._fft.fourier_space_field('curlu_cqks', 3)
+        self._curlu_cxyz = self._fft.real_space_field('curlu_cxyz', 3)
+        self._ucurlu_cqks = self._fft.fourier_space_field('ucurlu_cqks', 3)
+        self._ucurlu_cxyz = self._fft.real_space_field('ucurlu_cxyz', 3)
+
+        # Reusable scratch fields for the Runge-Kutta integrator.
+        self._rk_k = self._fft.fourier_space_field('_rk_k', 3)
+        self._rk_tmp = self._fft.fourier_space_field('_rk_tmp', 3)
+        self._rk_accum = self._fft.fourier_space_field('_rk_accum', 3)
+
+        # Single-component real symbols on the Fourier collection, used as
+        # per-pixel multipliers by `linalg.scal` (broadcast over the 3 velocity
+        # components): the dealiasing mask and the viscous symbol nu |k|^2.
+        fc = self._fft.fourier_space_collection
+        self._dealias_field = fc.real_field('_dealias_symbol', 1)
+        self._dealias_field.p[...] = self._dealias_qks
+        self._visc_field = fc.real_field('_visc_symbol', 1)
+        self._visc_field.p[...] = self._viscosity * self._wavevector_sq_qks
+
+        # Three-component coefficient fields for µGrid's fused per-pixel
+        # kernels (`linalg.cross` and `linalg.leray_project`), which operate on
+        # fields rather than numpy/cupy arrays. Filled once and reused: the
+        # curl symbol i k, the wavevector k, and k / |k|^2 for the projection.
+        self._ik_field = fc.complex_field('_ik_symbol', 3)
+        self._ik_field.p[...] = self._i_wavevector_cqks
+        self._k_field = fc.real_field('_k_symbol', 3)
+        self._k_field.p[...] = self._wavevector_cqks
+        self._invk_field = fc.real_field('_invk_symbol', 3)
+        self._invk_field.p[...] = self._inv_wavevector_cqks
+
     def _array_module(self):
         """Return the array module (numpy or cupy) of this engine's fields."""
         probe = self._fft.fourier_space_field('_array_module_probe', 1)
@@ -122,62 +164,103 @@ class NavierStokes:
         """Squared wavevector magnitude ``|k|^2`` (Fourier-space array)."""
         return self._wavevector_sq_qks
 
+    def dudt_into(self, t, y, out):
+        """
+        Compute the right-hand side of the (Fourier-space) Navier-Stokes
+        equation for the velocity field ``y`` and store it in ``out``.
+
+        Both ``y`` and ``out`` are 3-component Fourier-space µGrid fields. ``y``
+        is not modified. This is the performance-oriented entry point used by
+        :meth:`rk4_step`; the linear-combination and scaling steps use µGrid's
+        in-place BLAS-like field operations.
+        """
+        uc, ur = self._u_cqks, self._u_cxyz
+        cc, cr = self._curlu_cqks, self._curlu_cxyz
+        nc, nr = self._ucurlu_cqks, self._ucurlu_cxyz
+
+        # Vorticity in Fourier space: omega = i k x u  (fused cross product)
+        linalg.cross(self._ik_field, y, cc)
+        # Working copy of the velocity for the nonlinear product
+        uc.p[...] = y.p
+        # 2/3-rule dealiasing: band-limit velocity and vorticity to the lower
+        # 2/3 of the spectrum *before* forming the product in real space.
+        if self._dealias:
+            linalg.scal(self._dealias_field, uc)
+            linalg.scal(self._dealias_field, cc)
+        self._fft.ifft(uc, ur)
+        self._fft.ifft(cc, cr)
+        linalg.cross(ur, cr, nr)  # u x omega in real space (fused cross)
+        self._fft.fft(nr, nc)
+        linalg.scal(self._fft.normalisation, nc)
+        # Discard the aliased high-wavenumber band so no spurious energy is
+        # injected into the cut-off modes (they then only decay viscously).
+        if self._dealias:
+            linalg.scal(self._dealias_field, nc)
+
+        # out = N - nu |k|^2 u - k (k . N) / |k|^2  (projected onto div-free)
+        linalg.copy(nc, out)  # out = N
+        # viscous term: out -= nu |k|^2 u  (reuse uc, free after the ifft above)
+        linalg.copy(y, uc)
+        linalg.scal(self._visc_field, uc)
+        linalg.axpy(-1.0, uc, out)
+        # pressure projection (fused per-pixel contraction + rank-1 update):
+        # out -= k (k . N) / |k|^2
+        linalg.leray_project(self._k_field, self._invk_field, nc, out)
+
+    def rk4_step(self, y, t, dt):
+        """
+        Advance the Fourier-space velocity field ``y`` by one classical
+        fourth-order Runge-Kutta step, in place.
+
+        ``y`` is a 3-component Fourier-space µGrid field. The stage combinations
+        use µGrid's fused, in-place ``copy``/``axpy`` field operations, so the
+        step allocates no per-stage temporaries.
+        """
+        k, tmp, accum = self._rk_k, self._rk_tmp, self._rk_accum
+
+        linalg.copy(y, accum)                 # accum = y
+        self.dudt_into(t, y, k)               # k = k1 = f(t, y)
+        linalg.axpy(dt / 6, k, accum)
+
+        linalg.copy(y, tmp)
+        linalg.axpy(dt / 2, k, tmp)           # tmp = y + dt/2 k1
+        self.dudt_into(t + dt / 2, tmp, k)    # k = k2
+        linalg.axpy(dt / 3, k, accum)
+
+        linalg.copy(y, tmp)
+        linalg.axpy(dt / 2, k, tmp)           # tmp = y + dt/2 k2
+        self.dudt_into(t + dt / 2, tmp, k)    # k = k3
+        linalg.axpy(dt / 3, k, accum)
+
+        linalg.copy(y, tmp)
+        linalg.axpy(dt, k, tmp)               # tmp = y + dt k3
+        self.dudt_into(t + dt, tmp, k)        # k = k4
+        linalg.axpy(dt / 6, k, accum)
+
+        linalg.copy(accum, y)                 # y <- y + dt/6 (k1 + 2 k2 + 2 k3 + k4)
+
     def dudt(self, t, uarr_cqks):
         """
-        This function implements the incompressible Navier-Stokes equation in its
-        rotational form. It computes the time derivative of the Fourier-representation
-        of the velocity field.
+        Array-based right-hand side of the Navier-Stokes equation (rotational
+        form). Convenience wrapper around :meth:`dudt_into` that accepts and
+        returns a plain numpy/cupy array; the in-loop integrator should use
+        :meth:`rk4_step` instead.
 
         Parameters
         ----------
         t : float
             The current time.
         uarr_cqks : array_like
-            The current value of the Fourier-representation of the velocity field.
+            The current Fourier-representation of the velocity field.
 
         Returns
         -------
         array_like
             The time derivative of the Fourier-representation of the velocity field.
         """
-        xp = self._xp
-
-        # Get fields; this will reuse the same memory upon every call
-        u_cqks = self._fft.fourier_space_field('u_cqks', 3)
-        u_cxyz = self._fft.real_space_field('u_cxyz', 3)
-        curlu_cqks = self._fft.fourier_space_field('curlu_cqks', 3)
-        curlu_cxyz = self._fft.real_space_field('curlu_cxyz', 3)
-        ucurlu_cqks = self._fft.fourier_space_field('ucurlu_cqks', 3)
-        ucurlu_cxyz = self._fft.real_space_field('ucurlu_cxyz', 3)
-
-        # Copy numpy array to field (in-place; µGrid's `.p` has no setter)
-        u_cqks.p[...] = uarr_cqks
-
-        # Compute the vorticity (curl) in Fourier space: omega = i k x u
-        curlu_cqks.p[...] = xp.cross(self._wavevector_cqks * 1j, u_cqks.p, axis=0)
-        # 2/3-rule dealiasing: band-limit the velocity and vorticity to the
-        # lower 2/3 of the spectrum *before* forming the nonlinear product in
-        # real space. This keeps the aliasing error generated by the quadratic
-        # product out of the resolved modes.
-        if self._dealias:
-            u_cqks.p[...] *= self._dealias_qks
-            curlu_cqks.p[...] *= self._dealias_qks
-        self._fft.ifft(u_cqks, u_cxyz)
-        self._fft.ifft(curlu_cqks, curlu_cxyz)
-        ucurlu_cxyz.p[...] = xp.cross(u_cxyz.p, curlu_cxyz.p, axis=0)
-        self._fft.fft(ucurlu_cxyz, ucurlu_cqks)
-        ucurlu_cqks.p[...] *= self._fft.normalisation
-        # Discard the aliased high-wavenumber band of the nonlinear term so that
-        # no spurious energy is injected into the cut-off modes (they then only
-        # experience viscous decay).
-        if self._dealias:
-            ucurlu_cqks.p[...] *= self._dealias_qks
-
-        # Navier-Stokes equation: u x omega - nu k^2 u, projected onto the
-        # divergence-free subspace (the last term is the pressure projection).
-        return ucurlu_cqks.p \
-            - self._viscosity * self._wavevector_sq_qks * uarr_cqks \
-            - self._wavevector_cqks * (self._inv_wavevector_cqks * ucurlu_cqks.p).sum(axis=0)
+        self._rk_tmp.p[...] = uarr_cqks
+        self.dudt_into(t, self._rk_tmp, self._rk_k)
+        return self._rk_k.p.copy()
 
     def power(self, u_cqks, mask=None):
         """
