@@ -16,7 +16,7 @@ dynamic = ["version", "description"]
 dependencies = [
     "numpy",
     "muGrid>=0.109.0",
-    "mpi4py",
+    "NuMPI",
 ]
 
 [project.optional-dependencies]

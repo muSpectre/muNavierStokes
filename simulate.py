@@ -15,8 +15,9 @@ import argparse
 import time
 
 import numpy as np
-from mpi4py import MPI
+from NuMPI import MPI
 from muGrid import FileIONetCDF, OpenMode
+from muTimer import Timer
 
 from muNavierStokes import NavierStokes
 
@@ -199,43 +200,54 @@ def main():
             flush=True,
         )
 
+    # Hierarchical timer for a breakdown of where wall time goes. It is
+    # MPI-aware (gathers to rank 0) and prints nothing until print_summary().
+    timer = Timer(comm=comm)
+
     last_time = None
-    for n in range(args.nb_steps):
-        if n % args.screen_interval == 0:
-            ns.fft.ifft(state, velocity)
-            # float() collapses 0-d numpy/cupy results to a host scalar so the
-            # formatting below works on both CPU and GPU.
-            umin = float(ns.parnp.min(velocity.p))
-            umean = float(ns.parnp.mean(velocity.p))
-            umax = float(ns.parnp.max(velocity.p))
-            power = float(ns.power(state.p))
-            if rank == 0:
-                fps = (
-                    ""
-                    if last_time is None
-                    else f"{args.screen_interval / (time.time() - last_time):11.4g}"
-                )
-                print(
-                    f"{n:9d} {n * args.timestep:11.4g}   {umin:9.3g} / {umean:9.3g} / "
-                    f"{umax:9.3g}   {power:12.5g} {fps}",
-                    flush=True,
-                )
-            last_time = time.time()
+    with timer("time_loop"):
+        for n in range(args.nb_steps):
+            if n % args.screen_interval == 0:
+                with timer("diagnostics"):
+                    ns.fft.ifft(state, velocity)
+                    # float() collapses 0-d numpy/cupy results to a host scalar
+                    # so the formatting below works on both CPU and GPU.
+                    umin = float(ns.parnp.min(velocity.p))
+                    umean = float(ns.parnp.mean(velocity.p))
+                    umax = float(ns.parnp.max(velocity.p))
+                    power = float(ns.power(state.p))
+                    if rank == 0:
+                        fps = (
+                            ""
+                            if last_time is None
+                            else f"{args.screen_interval / (time.time() - last_time):11.4g}"
+                        )
+                        print(
+                            f"{n:9d} {n * args.timestep:11.4g}   {umin:9.3g} / "
+                            f"{umean:9.3g} / {umax:9.3g}   {power:12.5g} {fps}",
+                            flush=True,
+                        )
+                    last_time = time.time()
 
-        # Integrate one step (in place, on the device)
-        ns.rk4_step(state, n * args.timestep, args.timestep)
+            # Integrate one step (in place, on the device)
+            with timer("rk4_step"):
+                ns.rk4_step(state, n * args.timestep, args.timestep)
 
-        # Forcing: re-impose the frozen low-wavenumber amplitudes
-        if forcing is not None:
-            freeze_mask, frozen = forcing
-            state.p[:, freeze_mask] = frozen
+            # Forcing: re-impose the frozen low-wavenumber amplitudes
+            if forcing is not None:
+                with timer("forcing"):
+                    freeze_mask, frozen = forcing
+                    state.p[:, freeze_mask] = frozen
 
-        # Output to file
-        if n % args.dump_interval == 0:
-            ns.fft.ifft(state, velocity)
-            file.append_frame().write()
+            # Output to file
+            if n % args.dump_interval == 0:
+                with timer("output"):
+                    ns.fft.ifft(state, velocity)
+                    file.append_frame().write()
 
     file.close()
+
+    timer.print_summary(title="Navier-Stokes timing breakdown", comm=comm)
 
 
 if __name__ == "__main__":
