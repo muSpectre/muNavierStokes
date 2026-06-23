@@ -6,12 +6,12 @@ Taylor-Green initial condition), across log-spaced **3D** grid sizes. Lower is
 better.
 
 !!! info "Test machine & code version"
-    - **CPU:** Intel(R) Core(TM) Ultra 7 356H (16 logical cores)
-    - **GPU:** NVIDIA RTX PRO 500 Blackwell Generation Laptop GPU
-    - **muNavierStokes:** `1220935` — run 2026-06-23T08:32:01
+    - **CPU:** AMD Instinct MI300A Accelerator (192 logical cores)
+    - **GPU:** 4x AMD Instinct MI300A
+    - **muNavierStokes:** `7a60847-dirty` — run 2026-06-23T22:07:26
 
 Run configuration: triply-periodic box, kinematic viscosity `ν = 1/1600`,
-time step `1e-3`, 2/3-rule dealiasing on. Each data point times 10 RK4 steps
+time step `1e-3`, 2/3-rule dealiasing on. Each data point times 20 RK4 steps
 (after warm-up) and reports the mean — i.e. a **fixed work budget**, so every
 configuration performs identical arithmetic. Timing covers only the integration
 loop (no file I/O, no diagnostics). One RK4 step evaluates the right-hand side
@@ -24,16 +24,18 @@ The plot below merges the ways of running the *same* solver on this machine:
 
 - **CPU (1 core)** — a single core, MPI disabled (the non-MPI muGrid build).
   muGrid's compute kernels carry no OpenMP, so a non-MPI CPU run uses one core.
-- **CPU (16 cores, MPI)** — the whole CPU via MPI pencil decomposition
-  (`mpiexec -n 16`), the grid split into per-rank subdomains whose FFTs
+- **CPU (92 cores, MPI)** — the whole CPU via MPI pencil decomposition
+  (`mpiexec -n 92`), the grid split into per-rank subdomains whose FFTs
   exchange data each transform.
 - **GPU (1 device)** — the whole GPU (cuFFT plus the fused device kernels).
+- **GPU (N devices, MPI)** — all GPUs, one rank per device.
 
-| Configuration | 16³ (4k) | 24³ (14k) | 32³ (33k) | 48³ (111k) | 64³ (262k) | 96³ (885k) | 128³ (2.1M) |
+| Configuration | 32³ (33k) | 48³ (111k) | 64³ (262k) | 96³ (885k) | 128³ (2.1M) | 192³ (7.1M) | 256³ (16.8M) |
 |---|---|---|---|---|---|---|---|
-| CPU (1 core) | 0.829 | 2.56 | 6.72 | 35.6 | 87.4 | 331 | 891 |
-| CPU (16 cores, MPI) | 0.915 | 2.12 | 1.93 | 6.76 | 32.8 | 91.3 | 234 |
-| GPU (1 device) | 5.46 | 5.05 | 5.86 | 6.82 | 15.2 | 51.4 | 117 |
+| CPU (1 core) | 8.49 | 37.3 | 96.2 | 416 | 1.11e+03 | 3.39e+03 | 7.95e+03 |
+| CPU (92 cores, MPI) | 2.79 | 4.65 | 6.8 | 19.5 | 37.7 | 151 | 287 |
+| GPU (1 device) | 3.13 | 2.27 | 3.1 | 4.62 | 6.9 | 16.9 | 48.2 |
+| GPU (4 devices, MPI) | 6.86 | 9.13 | 7.57 | 17 | 32.2 | 102 | 229 |
 
 (values are **milliseconds per RK4 step**)
 
@@ -54,32 +56,39 @@ short of the GPU.
     The solver binds each MPI rank to the communicator it is given, so on a host
     with several GPUs `mpiexec -n <#GPUs> python bench_workload.py -d cuda` runs
     one rank per device. This benchmark adds a *GPU (N devices, MPI)* curve
-    automatically when more than one GPU is present. **This run used a single GPU, so only the single-GPU curve is shown; the script produces the multi-GPU curve on a multi-GPU host with no changes.**
+    automatically when more than one GPU is present. **This run used several GPUs, so the multi-GPU curve is shown.**
 
 ## MPI strong scaling (CPU)
 
 Strong scaling of the same step (fixed problem size, increasing MPI ranks) on the
-16-core CPU.
-
-**64³ (262,144 points)**
-
-| Ranks | ms/step | Speedup | Parallel eff. |
-|---|---|---|---|
-| 1 | 87.46 | 1.00× | 100% |
-| 2 | 54.41 | 1.61× | 80% |
-| 4 | 29.43 | 2.97× | 74% |
-| 8 | 20.30 | 4.31× | 54% |
-| 16 | 17.75 | 4.93× | 31% |
+92-core CPU.
 
 **96³ (884,736 points)**
 
 | Ranks | ms/step | Speedup | Parallel eff. |
 |---|---|---|---|
-| 1 | 331.91 | 1.00× | 100% |
-| 2 | 207.45 | 1.60× | 80% |
-| 4 | 118.83 | 2.79× | 70% |
-| 8 | 90.67 | 3.66× | 46% |
-| 16 | 79.99 | 4.15× | 26% |
+| 16 | 49.02 | nan× | nan% |
+| 32 | 25.06 | nan× | nan% |
+| 64 | 20.62 | nan× | nan% |
+| 92 | 19.67 | nan× | nan% |
+
+**128³ (2,097,152 points)**
+
+| Ranks | ms/step | Speedup | Parallel eff. |
+|---|---|---|---|
+| 16 | 160.58 | nan× | nan% |
+| 32 | 73.12 | nan× | nan% |
+| 64 | 37.28 | nan× | nan% |
+| 92 | 39.02 | nan× | nan% |
+
+**192³ (7,077,888 points)**
+
+| Ranks | ms/step | Speedup | Parallel eff. |
+|---|---|---|---|
+| 16 | 607.45 | nan× | nan% |
+| 32 | 310.83 | nan× | nan% |
+| 64 | 147.45 | nan× | nan% |
+| 92 | 157.01 | nan× | nan% |
 
 ![Navier-Stokes MPI strong scaling](benchmark_mpi.png)
 

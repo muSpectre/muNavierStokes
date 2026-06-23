@@ -97,13 +97,23 @@ def detect_cpu():
 
 def detect_gpu():
     """(human-readable description, device count)."""
-    try:
-        out = subprocess.run(
-            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
-            capture_output=True, text=True, timeout=30)
-        names = [n.strip() for n in out.stdout.splitlines() if n.strip()]
-    except (OSError, subprocess.SubprocessError):
-        names = []
+    names = []
+    # Try nvidia-smi first (NVIDIA), then rocm-smi (AMD).
+    for cmd, parse in [
+        (["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+         lambda out: [n.strip() for n in out.splitlines() if n.strip()]),
+        (["rocm-smi", "--showproductname", "--csv"],
+         lambda out: [row.split(",")[1].strip()
+                      for row in out.splitlines()[1:] if row.strip()]),
+    ]:
+        try:
+            out = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            if out.returncode == 0:
+                names = parse(out.stdout)
+                if names:
+                    break
+        except (OSError, subprocess.SubprocessError):
+            pass
     if not names:
         return "none", 0
     uniq = sorted(set(names))

@@ -63,9 +63,18 @@ DEFAULT_MPI_PYTHONPATH = os.pathsep.join([
 # --------------------------------------------------------------------------- #
 # Running the workload
 # --------------------------------------------------------------------------- #
-def run(device, n, steps, warmup, nranks, mpi_pythonpath):
-    """Run one timed workload; return a dict of metrics or None."""
-    base = [WORKLOAD, "-n", str(n), "-d", device,
+def run(device, n, steps, warmup, nranks, mpi_pythonpath, timeout):
+    """Run one timed workload; return a dict of metrics or None on failure.
+
+    Any failure (crash, OOM, launch error, timeout, or unparseable output) is
+    logged and reported as ``None`` so the caller can skip the point and carry
+    on. The MPI configurations launch the workload via ``python -m mpi4py`` so
+    that an unhandled exception on *any* rank calls ``MPI_Abort`` and brings the
+    whole job down with a non-zero exit, instead of leaving the surviving ranks
+    to deadlock in the next collective (which would otherwise hang until
+    ``timeout`` — up to that many seconds wasted per failed point).
+    """
+    base = ["-n", str(n), "-d", device,
             "--steps", str(steps), "--warmup", str(warmup), "--json"]
     # Make muNavierStokes importable; the non-MPI configs inherit the ambient
     # muGrid, the MPI configs prepend an MPI-enabled build.
@@ -73,24 +82,38 @@ def run(device, n, steps, warmup, nranks, mpi_pythonpath):
     pp = [REPO_ROOT]
     if nranks > 1:
         pp = [mpi_pythonpath, REPO_ROOT]
-        cmd = ["mpiexec", "-n", str(nranks), sys.executable] + base
+        # `-m mpi4py` installs an excepthook that MPI_Aborts the job on any
+        # rank's unhandled exception, turning a would-be deadlock into a fast,
+        # non-zero exit.
+        cmd = (["mpiexec", "-n", str(nranks), sys.executable, "-m", "mpi4py",
+                WORKLOAD] + base)
     else:
-        cmd = [sys.executable] + base
+        cmd = [sys.executable, WORKLOAD] + base
     existing = env.get("PYTHONPATH")
     env["PYTHONPATH"] = os.pathsep.join(pp + ([existing] if existing else []))
+
+    tag = f"[{device} n={n} ranks={nranks}]"
     try:
-        out = subprocess.run(cmd, capture_output=True, text=True, timeout=7200,
-                             env=env)
-    except subprocess.SubprocessError:
+        out = subprocess.run(cmd, capture_output=True, text=True,
+                             timeout=timeout, env=env)
+    except subprocess.TimeoutExpired:
+        sys.stderr.write(f"  {tag} timed out after {timeout}s\n")
+        return None
+    except OSError as e:
+        sys.stderr.write(f"  {tag} could not launch: {e}\n")
+        return None
+    if out.returncode != 0:
+        sys.stderr.write(f"  {tag} exited with code {out.returncode}\n"
+                         f"{out.stderr[-500:]}\n")
         return None
     m = re.search(r"\{.*\}", out.stdout, re.DOTALL)
     if not m:
-        sys.stderr.write(f"  [{device} n={n} ranks={nranks}] no JSON\n"
-                         f"{out.stderr[-500:]}\n")
+        sys.stderr.write(f"  {tag} produced no JSON\n{out.stderr[-500:]}\n")
         return None
     try:
         d = json.loads(m.group(0))
     except json.JSONDecodeError:
+        sys.stderr.write(f"  {tag} produced malformed JSON\n")
         return None
     r, c = d["results"], d["config"]
     return dict(npts=c["npts"], secs=r["secs_per_step"],
@@ -104,11 +127,21 @@ def collect(args, prov):
     configs = db.plan_configs(args.mpi_cpu_ranks, nb_gpus, want_gpu)
     rows = []
 
+    # The MPI points need an MPI-enabled muGrid on --mpi-pythonpath; warn early
+    # if the build it points at is absent (every MPI point would then fail).
+    uses_mpi = (any(nr > 1 for _, _, nr in configs)
+                or any(R > 1 for R in args.scaling_ranks))
+    mpi_build = args.mpi_pythonpath.split(os.pathsep)[0]
+    if uses_mpi and not os.path.isdir(mpi_build):
+        sys.stderr.write(f"  warning: MPI build dir not found: {mpi_build}\n"
+                         f"  (pass --mpi-pythonpath; MPI points will be skipped "
+                         f"if muGrid is not MPI-enabled)\n")
+
     # Time vs. size, one curve per device/MPI config.
     for n in args.sizes:
         for key, device, nranks in configs:
             r = run(device, n, args.steps, args.warmup, nranks,
-                    args.mpi_pythonpath)
+                    args.mpi_pythonpath, args.timeout)
             label = CONFIG_META[key]["label"](nranks)
             if r is None:
                 sys.stderr.write(f"  {label} {n}^3: skipped (failed / OOM)\n")
@@ -125,7 +158,8 @@ def collect(args, prov):
     # MPI strong scaling (CPU).
     for n in args.scaling_sizes:
         for R in args.scaling_ranks:
-            r = run("cpu", n, args.steps, args.warmup, R, args.mpi_pythonpath)
+            r = run("cpu", n, args.steps, args.warmup, R, args.mpi_pythonpath,
+                    args.timeout)
             if r is None:
                 sys.stderr.write(f"  scaling {n}^3 ranks={R}: skipped\n")
                 continue
@@ -274,7 +308,7 @@ def make_scaling_plot(scaling, path):
 # --------------------------------------------------------------------------- #
 # Doc page
 # --------------------------------------------------------------------------- #
-DOC_TEMPLATE = """# Benchmark
+DOC_TEMPLATE = r"""# Benchmark
 
 Wall time of a single classical fourth-order Runge-Kutta step of the
 pseudo-spectral [Navier-Stokes solver](implementation.md) (`benchmarks/bench_workload.py`,
@@ -383,7 +417,7 @@ def main():
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--sizes", type=int, nargs="+",
-                    default=[16, 24, 32, 48, 64, 96, 128])
+                    default=[32, 48, 64, 96, 128])
     ap.add_argument("--mpi-cpu-ranks", type=int, default=os.cpu_count(),
                     help="Ranks for the full-machine MPI CPU curve")
     ap.add_argument("--no-gpu", action="store_true", help="Skip the GPU curves")
@@ -395,6 +429,9 @@ def main():
     ap.add_argument("--mpi-pythonpath", default=DEFAULT_MPI_PYTHONPATH,
                     help="PYTHONPATH prepended for MPI (mpiexec) subprocesses; "
                          "must point at an MPI-enabled muGrid build")
+    ap.add_argument("--timeout", type=int, default=1800,
+                    help="per-data-point wall-clock timeout in seconds; a point "
+                         "that exceeds it is skipped (default 1800)")
     ap.add_argument("--render-only", action="store_true",
                     help="Skip running; render from the database")
     ap.add_argument("--timestamp", default=None,
