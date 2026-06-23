@@ -26,9 +26,12 @@ python simulate.py --help
 
 ## Documentation
 
-See [`docs/muNavierStokes.md`](docs/muNavierStokes.md) for the physics, the
-implementation, the µFFT→µGrid migration notes, and how to run the simulation
-and tests.
+Full documentation is published at
+**<https://muSpectre.github.io/muNavierStokes/>** (built with MkDocs from the
+[`docs/`](docs/) directory): the [physics](docs/physics.md), the
+[implementation](docs/implementation.md) (including the µFFT→µGrid migration
+notes), [usage](docs/usage.md), [GPU](docs/gpu.md) execution, and a
+[benchmark](docs/benchmark.md) (single-CPU, multi-CPU MPI, single-GPU).
 
 ## Layout
 

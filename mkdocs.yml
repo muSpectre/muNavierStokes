@@ -1,0 +1,60 @@
+site_name: muNavierStokes
+site_description: Pseudo-spectral direct numerical simulation (DNS) of the incompressible Navier–Stokes equations, built on µGrid (MPI + GPU)
+site_url: https://muSpectre.github.io/muNavierStokes/
+repo_url: https://github.com/muSpectre/muNavierStokes
+repo_name: muSpectre/muNavierStokes
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: teal
+      accent: teal
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: teal
+      accent: teal
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.sections
+    - navigation.top
+    - content.code.copy
+    - search.suggest
+    - toc.follow
+
+markdown_extensions:
+  - admonition
+  - toc:
+      permalink: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences
+  - pymdownx.inlinehilite
+  - pymdownx.arithmatex:
+      generic: true
+  - tables
+
+extra_javascript:
+  - javascripts/mathjax.js
+  - https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js
+
+nav:
+  - Home: index.md
+  - Installation: installation.md
+  - Usage: usage.md
+  - Physics: physics.md
+  - Implementation: implementation.md
+  - GPU: gpu.md
+  - Benchmark: benchmark.md
+
+exclude_docs: |
+  requirements.txt
