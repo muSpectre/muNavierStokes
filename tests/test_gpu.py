@@ -66,7 +66,11 @@ def test_cpu_and_gpu_agree():
 
     d_cpu = ns_cpu.dudt(0.0, u_cpu)
     d_gpu = ns_gpu.dudt(0.0, u_gpu)
-    np.testing.assert_allclose(cp.asnumpy(d_gpu), d_cpu, rtol=1e-10, atol=1e-12)
+    # The resolved modes are O(1e2-1e3), so rtol governs them; the k=0 mode is
+    # the (near-zero) spatial mean of u x omega, whose value is pure FFT round-off
+    # (~1e-12). atol must clear that floor, which differs slightly between the CPU
+    # (PocketFFT) and GPU (cuFFT) transforms.
+    np.testing.assert_allclose(cp.asnumpy(d_gpu), d_cpu, rtol=1e-10, atol=1e-9)
 
     np.testing.assert_allclose(
         float(ns_gpu.power(u_gpu)), float(ns_cpu.power(u_cpu)), rtol=1e-10

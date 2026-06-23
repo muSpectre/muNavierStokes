@@ -25,9 +25,13 @@ import sys
 import time
 
 import numpy as np
-from NuMPI import MPI
 
 from muNavierStokes import NavierStokes
+
+try:
+    from mpi4py import MPI
+except ImportError:  # serial fall-back when mpi4py is not installed
+    MPI = None
 
 PHYSICAL_SIZE = (1, 1, 1)
 
@@ -62,7 +66,9 @@ def main():
     ap.add_argument("--json", action="store_true", help="emit a JSON result line")
     args = ap.parse_args()
 
-    comm = MPI.COMM_WORLD
+    comm = MPI.COMM_WORLD if MPI is not None else None
+    rank = comm.Get_rank() if comm is not None else 0
+    nranks = comm.Get_size() if comm is not None else 1
     device = None if args.device == "cpu" else args.device
 
     n = args.nb_grid_pts
@@ -83,7 +89,8 @@ def main():
     for _ in range(args.warmup):
         ns.rk4_step(state, 0.0, dt)
     sync()
-    comm.Barrier()
+    if comm is not None:
+        comm.Barrier()
 
     t0 = time.perf_counter()
     for i in range(args.steps):
@@ -92,13 +99,14 @@ def main():
     elapsed = time.perf_counter() - t0
 
     # The slowest rank governs the wall time of a synchronous step.
-    elapsed = comm.allreduce(elapsed, op=MPI.MAX)
+    if comm is not None:
+        elapsed = comm.allreduce(elapsed, op=MPI.MAX)
     secs = elapsed / args.steps
 
     npts = int(np.prod(ns.fft.nb_domain_grid_pts))
     result = {
         "config": {
-            "device": args.device, "nranks": comm.Get_size(),
+            "device": args.device, "nranks": nranks,
             "n": n, "npts": npts, "dim": 3,
             "warmup": args.warmup, "steps": args.steps,
         },
@@ -108,13 +116,13 @@ def main():
             "mpoints_per_sec": npts / secs / 1e6 if secs else float("nan"),
         },
     }
-    if comm.Get_rank() == 0:
+    if rank == 0:
         if args.json:
             print(json.dumps(result))
         else:
             r = result["results"]
             print(f"n={n}^3 ({npts} pts) device={args.device} "
-                  f"ranks={comm.Get_size()}: {r['secs_per_step'] * 1e3:.3f} ms/step, "
+                  f"ranks={nranks}: {r['secs_per_step'] * 1e3:.3f} ms/step, "
                   f"{r['mpoints_per_sec']:.1f} Mpoint/s", file=sys.stderr)
 
 
