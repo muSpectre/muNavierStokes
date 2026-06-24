@@ -8,7 +8,7 @@ better.
 !!! info "Test machine & code version"
     - **CPU:** AMD Instinct MI300A Accelerator (192 logical cores)
     - **GPU:** 4x AMD Instinct MI300A
-    - **muNavierStokes:** `7a60847-dirty` — run 2026-06-23T22:07:26
+    - **muNavierStokes:** `2fc3997-dirty` — run 2026-06-23T22:35:28
 
 Run configuration: triply-periodic box, kinematic viscosity `ν = 1/1600`,
 time step `1e-3`, 2/3-rule dealiasing on. Each data point times 20 RK4 steps
@@ -30,12 +30,12 @@ The plot below merges the ways of running the *same* solver on this machine:
 - **GPU (1 device)** — the whole GPU (cuFFT plus the fused device kernels).
 - **GPU (N devices, MPI)** — all GPUs, one rank per device.
 
-| Configuration | 32³ (33k) | 48³ (111k) | 64³ (262k) | 96³ (885k) | 128³ (2.1M) | 192³ (7.1M) | 256³ (16.8M) |
-|---|---|---|---|---|---|---|---|
-| CPU (1 core) | 8.49 | 37.3 | 96.2 | 416 | 1.11e+03 | 3.39e+03 | 7.95e+03 |
-| CPU (92 cores, MPI) | 2.79 | 4.65 | 6.8 | 19.5 | 37.7 | 151 | 287 |
-| GPU (1 device) | 3.13 | 2.27 | 3.1 | 4.62 | 6.9 | 16.9 | 48.2 |
-| GPU (4 devices, MPI) | 6.86 | 9.13 | 7.57 | 17 | 32.2 | 102 | 229 |
+| Configuration | 32³ (33k) | 48³ (111k) | 64³ (262k) | 96³ (885k) | 128³ (2.1M) | 192³ (7.1M) | 256³ (16.8M) | 512³ (134.2M) |
+|---|---|---|---|---|---|---|---|---|
+| CPU (1 core) | 8.52 | 41.1 | 98.1 | 410 | 1.09e+03 | 3.39e+03 | 7.98e+03 | 6.46e+04 |
+| CPU (92 cores, MPI) | 2.42 | 4.89 | 7.14 | 19.2 | 38.1 | 150 | 284 | 2.68e+03 |
+| GPU (1 device) | 2.93 | 3.4 | 2.94 | 4.43 | 6.18 | 17.1 | 47.5 | — |
+| GPU (4 devices, MPI) | 4.31 | 9.21 | 8.69 | 18.3 | 31.6 | 97.4 | 228 | — |
 
 (values are **milliseconds per RK4 step**)
 
@@ -67,28 +67,40 @@ Strong scaling of the same step (fixed problem size, increasing MPI ranks) on th
 
 | Ranks | ms/step | Speedup | Parallel eff. |
 |---|---|---|---|
-| 16 | 49.02 | nan× | nan% |
-| 32 | 25.06 | nan× | nan% |
-| 64 | 20.62 | nan× | nan% |
-| 92 | 19.67 | nan× | nan% |
+| 1 | 409.96 | 1.00× | 100% |
+| 2 | 316.81 | 1.29× | 65% |
+| 4 | 191.62 | 2.14× | 53% |
+| 8 | 127.87 | 3.21× | 40% |
+| 16 | 48.53 | 8.45× | 53% |
+| 32 | 25.42 | 16.13× | 50% |
+| 64 | 21.29 | 19.25× | 30% |
+| 92 | 19.19 | 21.37× | 23% |
 
 **128³ (2,097,152 points)**
 
 | Ranks | ms/step | Speedup | Parallel eff. |
 |---|---|---|---|
-| 16 | 160.58 | nan× | nan% |
-| 32 | 73.12 | nan× | nan% |
-| 64 | 37.28 | nan× | nan% |
-| 92 | 39.02 | nan× | nan% |
+| 1 | 1095.95 | 1.00× | 100% |
+| 2 | 748.78 | 1.46× | 73% |
+| 4 | 454.55 | 2.41× | 60% |
+| 8 | 341.64 | 3.21× | 40% |
+| 16 | 156.79 | 6.99× | 44% |
+| 32 | 74.20 | 14.77× | 46% |
+| 64 | 38.47 | 28.49× | 45% |
+| 92 | 38.44 | 28.51× | 31% |
 
 **192³ (7,077,888 points)**
 
 | Ranks | ms/step | Speedup | Parallel eff. |
 |---|---|---|---|
-| 16 | 607.45 | nan× | nan% |
-| 32 | 310.83 | nan× | nan% |
-| 64 | 147.45 | nan× | nan% |
-| 92 | 157.01 | nan× | nan% |
+| 1 | 3402.14 | 1.00× | 100% |
+| 2 | 2416.44 | 1.41× | 70% |
+| 4 | 1386.77 | 2.45× | 61% |
+| 8 | 1102.97 | 3.08× | 39% |
+| 16 | 573.59 | 5.93× | 37% |
+| 32 | 302.74 | 11.24× | 35% |
+| 64 | 145.19 | 23.43× | 37% |
+| 92 | 153.42 | 22.18× | 24% |
 
 ![Navier-Stokes MPI strong scaling](benchmark_mpi.png)
 

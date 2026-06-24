@@ -27,10 +27,10 @@ export UCX_TLS="^rocm_ipc"
 cd "$REPO"
 
 python3 benchmarks/benchmark.py \
-    --sizes 32 48 64 96 128 192 256 \
+    --sizes 32 48 64 96 128 192 256 512 \
     --mpi-cpu-ranks 92 \
     --scaling-sizes 96 128 192 \
-    --scaling-ranks 92 64 32 16 \
+    --scaling-ranks 92 64 32 16 8 4 2 1 \
     --steps 20 \
     --warmup 5 \
     --mpi-pythonpath "$MPI_PP" \
