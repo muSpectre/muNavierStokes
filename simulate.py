@@ -15,16 +15,8 @@ import argparse
 import time
 
 import numpy as np
-from muGrid import FileIONetCDF, OpenMode
+from muGrid import Communicator, FileIONetCDF, OpenMode
 from muTimer import Timer
-
-try:
-    # mpi4py supplies COMM_WORLD for parallel runs. muGrid accepts an mpi4py
-    # communicator (even a size-1 one on a non-MPI build); reductions go through
-    # muGrid's own Communicator inside the solver.
-    from mpi4py import MPI
-except ImportError:  # serial fall-back when mpi4py is not installed
-    MPI = None
 
 from muNavierStokes import NavierStokes
 
@@ -159,8 +151,10 @@ def parse_args():
 
 def main():
     args = parse_args()
-    comm = MPI.COMM_WORLD if MPI is not None else None
-    rank = comm.Get_rank() if comm is not None else 0
+    # MPI_COMM_WORLD under an MPI launcher, serial otherwise: muGrid starts MPI
+    # itself, so mpi4py is not needed
+    comm = Communicator.world()
+    rank = comm.rank
 
     ns = NavierStokes(
         tuple(args.nb_grid_pts),

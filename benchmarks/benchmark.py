@@ -36,6 +36,7 @@ Examples
 """
 
 import argparse
+import importlib.util
 import json
 import os
 import re
@@ -68,11 +69,12 @@ def run(device, n, steps, warmup, nranks, mpi_pythonpath, timeout):
 
     Any failure (crash, OOM, launch error, timeout, or unparseable output) is
     logged and reported as ``None`` so the caller can skip the point and carry
-    on. The MPI configurations launch the workload via ``python -m mpi4py`` so
-    that an unhandled exception on *any* rank calls ``MPI_Abort`` and brings the
-    whole job down with a non-zero exit, instead of leaving the surviving ranks
-    to deadlock in the next collective (which would otherwise hang until
-    ``timeout`` — up to that many seconds wasted per failed point).
+    on. Where mpi4py is installed, the MPI configurations launch the workload
+    via ``python -m mpi4py`` so that an unhandled exception on *any* rank calls
+    ``MPI_Abort`` and brings the whole job down with a non-zero exit, instead of
+    leaving the surviving ranks to deadlock in the next collective (which would
+    otherwise hang until ``timeout`` — up to that many seconds wasted per failed
+    point).
     """
     base = ["-n", str(n), "-d", device,
             "--steps", str(steps), "--warmup", str(warmup), "--json"]
@@ -82,11 +84,15 @@ def run(device, n, steps, warmup, nranks, mpi_pythonpath, timeout):
     pp = [REPO_ROOT]
     if nranks > 1:
         pp = [mpi_pythonpath, REPO_ROOT]
-        # `-m mpi4py` installs an excepthook that MPI_Aborts the job on any
-        # rank's unhandled exception, turning a would-be deadlock into a fast,
-        # non-zero exit.
-        cmd = (["mpiexec", "-n", str(nranks), sys.executable, "-m", "mpi4py",
-                WORKLOAD] + base)
+        # `-m mpi4py`, where mpi4py is installed, adds an excepthook that
+        # MPI_Aborts the job on any rank's unhandled exception, turning a
+        # would-be deadlock into a fast, non-zero exit. The workload itself
+        # does not need mpi4py (muGrid starts MPI); without it a failing rank
+        # is caught by `timeout` instead.
+        abort_hook = (["-m", "mpi4py"]
+                      if importlib.util.find_spec("mpi4py") else [])
+        cmd = (["mpiexec", "-n", str(nranks), sys.executable] + abort_hook
+               + [WORKLOAD] + base)
     else:
         cmd = [sys.executable, WORKLOAD] + base
     existing = env.get("PYTHONPATH")

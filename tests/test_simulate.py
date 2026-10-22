@@ -57,10 +57,12 @@ def test_end_to_end_writes_only_velocity(ic, tmp_path, monkeypatch):
         pytest.skip("muGrid built without NetCDF support")
     netCDF4 = pytest.importorskip("netCDF4")
 
-    out = tmp_path / "out.nc"
+    # One file for all ranks: simulate.py writes it collectively under MPI,
+    # and pytest's tmp_path differs per process
+    out = muGrid.Communicator.world().bcast(str(tmp_path / "out.nc"))
     argv = ["simulate.py", "-i", ic, "-n", "16", "16", "16",
             "-N", "5", "--dump-interval", "2", "--screen-interval", "2",
-            "--seed", "0", "-o", str(out)]
+            "--seed", "0", "-o", out]
     monkeypatch.setattr("sys.argv", argv)
     simulate.main()
 

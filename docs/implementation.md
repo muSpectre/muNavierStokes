@@ -13,8 +13,8 @@ NavierStokes(nb_grid_pts, physical_size=(1, 1, 1), viscosity=0.001,
 | `physical_size` | box size in each direction (sets the grid spacing \(\Delta x\)) |
 | `viscosity` | kinematic viscosity \(\nu\) |
 | `dealias` | enable the 2/3-rule dealiasing |
-| `communicator` | an `mpi4py` communicator for parallel runs, or `None` for serial |
-| `device` | `None`/`"cpu"`, or `"cuda"`/`"cuda:N"` for the GPU |
+| `communicator` | `muGrid.Communicator.world()` for parallel runs (an `mpi4py` communicator works too), or `None` for serial |
+| `device` | `None`/`"cpu"`, or `"cuda"`/`"cuda:N"` for the GPU; a bare `"cuda"` puts each MPI rank on GPU `node_rank % #GPUs` |
 
 Precomputed once in `_init_fft` (and moved onto the compute device):
 

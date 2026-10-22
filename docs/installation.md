@@ -2,8 +2,9 @@
 
 muNavierStokes is a small pure-Python package. Its one non-trivial dependency is
 [µGrid](https://github.com/muSpectre/muGrid) **with FFT support** — and, for
-parallel or GPU runs, built with MPI/CUDA. Everything else (`numpy`, `mpi4py`)
-is standard.
+parallel or GPU runs, built with MPI/CUDA. Everything else (`numpy`) is
+standard; parallel runs do not need `mpi4py`, since µGrid (≥ 1.6.0) starts MPI
+itself.
 
 ## Dependencies
 
@@ -11,7 +12,7 @@ is standard.
 |---|---|
 | `muGrid` (with `FFTEngine`; NetCDF for file I/O) | the solver and output |
 | `numpy` | array math |
-| `mpi4py` | MPI-parallel runs |
+| `mpi4py` (optional) | aborting a benchmark job when one rank fails (`benchmarks/benchmark.py`) |
 | `matplotlib`, `netCDF4` | the post-processing scripts |
 
 ## Installing muGrid
@@ -29,7 +30,6 @@ packages first to enable parallel runs and file I/O, e.g. on Debian/Ubuntu:
 ```bash
 sudo apt-get install -y cmake ninja-build \
     openmpi-bin libopenmpi-dev libnetcdf-dev libpnetcdf-dev
-CC=mpicc pip install --no-binary mpi4py mpi4py
 pip install -v "muGrid @ git+https://github.com/muSpectre/muGrid.git"
 ```
 
@@ -38,13 +38,13 @@ For a **GPU** build, compile µGrid with CUDA enabled (see [GPU](gpu.md)).
 ## Installing muNavierStokes
 
 !!! warning "Use `--no-deps` against a source-built µGrid"
-    `pyproject.toml` pins `muGrid>=0.109.0`. A git/source build of µGrid carries
+    `pyproject.toml` pins `muGrid>=1.6.0`. A git/source build of µGrid carries
     a setuptools-scm *dev* version that does **not** satisfy that pin, so a normal
     `pip install -e .` would try to pull a release wheel from PyPI and clobber
     your MPI/NetCDF-enabled build. Install without re-resolving dependencies:
 
 ```bash
-# numpy / mpi4py / muGrid already present from the steps above
+# numpy / muGrid already present from the steps above
 pip install --no-deps -e .
 pip install pytest pytest-cov netCDF4   # optional: tests + post-processing
 ```

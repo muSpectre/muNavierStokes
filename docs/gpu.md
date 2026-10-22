@@ -57,12 +57,14 @@ The caller must keep the integration array on the **same device** as the solver
 Global reductions (`min`/`max`/`mean`/`sum` behind `ns.parnp` and `power`) go
 through µGrid's GPU-aware `Communicator` via its `.reduction` adapter: it reduces
 CuPy buffers on-device and short-circuits serial runs entirely (no MPI call, so
-no CUDA-aware MPI is needed for a single rank). Multi-GPU runs still require a
-CUDA-aware `mpi4py` for the cross-rank all-reduce.
+no CUDA-aware MPI is needed for a single rank). Across ranks µGrid hands device
+buffers to MPI directly when the MPI library is CUDA-aware and stages them
+through the host otherwise; mpi4py is not involved.
 
 ## Multi-GPU
 
-The solver binds to whatever communicator it is given, so on a host with several
+With `-d cuda` each rank binds to GPU `node_rank % #GPUs` (its rank among the
+ranks on its node, as µGrid's communicator reports it), so on a host with several
 GPUs `mpirun -np <#GPUs> python simulate.py -d cuda` runs one rank per device.
 See the [Benchmark](benchmark.md) page for the single-GPU timing on the reference
 machine and the automatically-added multi-GPU curve on multi-GPU hosts.
