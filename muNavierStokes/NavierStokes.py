@@ -48,8 +48,10 @@ class NavierStokes:
         self._physical_size = physical_size
         self._viscosity = viscosity
         self._dealias = dealias
-        self._communicator = communicator
-        self._device = device
+        # A muGrid communicator whatever was passed: None (serial),
+        # muGrid.Communicator.world() for MPI runs, or an mpi4py communicator
+        self._communicator = Communicator(communicator)
+        self._device = self._placed_device(device)
 
         self._init_fft()
 
@@ -57,7 +59,7 @@ class NavierStokes:
         # Parallel reduction helper and grid spacing. muGrid's communicator
         # provides GPU-aware, full-array global reductions (sum/min/max/mean)
         # via its `.reduction` adapter, replacing NuMPI's numpy-only Reduction.
-        self._parnp = Communicator(self._communicator).reduction
+        self._parnp = self._communicator.reduction
         self._grid_spacing = np.array(self._physical_size) / np.array(self._nb_grid_pts)
 
         # FFT engine (µGrid selects PocketFFT on the CPU, cuFFT/rocFFT on the GPU)
@@ -135,6 +137,22 @@ class NavierStokes:
         self._k_field.p[...] = self._wavevector_cqks
         self._invk_field = fc.real_field('_invk_symbol', 3)
         self._invk_field.p[...] = self._inv_wavevector_cqks
+
+    def _placed_device(self, device):
+        """The device this rank computes on. A bare GPU alias ("cuda",
+        "rocm", "gpu") is bound to GPU ``node_rank % nb_gpus``, so that an
+        MPI run spreads its ranks over the node's GPUs instead of putting all
+        of them on device 0; anything else (None, "cuda:N", a muGrid.Device)
+        is used as given."""
+        if not (isinstance(device, str)
+                and device.lower() in ("cuda", "rocm", "gpu")):
+            return device
+        import cupy
+
+        nb_gpus = max(1, cupy.cuda.runtime.getDeviceCount())
+        gpu_id = self._communicator.node_rank % nb_gpus
+        cupy.cuda.Device(gpu_id).use()
+        return f"{device.lower()}:{gpu_id}"
 
     def _array_module(self):
         """Return the array module (numpy or cupy) of this engine's fields."""

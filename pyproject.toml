@@ -15,8 +15,10 @@ requires-python = ">=3.10"
 dynamic = ["version", "description"]
 dependencies = [
     "numpy",
-    "muGrid>=0.109.0",
-    "mpi4py",
+    # 1.6.0 is the first release that starts MPI itself
+    # (Communicator.world(), node_rank for GPU placement), so mpi4py is not
+    # needed for parallel runs
+    "muGrid>=1.6.0",
 ]
 
 [project.optional-dependencies]
@@ -25,6 +27,9 @@ test = [
     "pytest-cov",
     "netCDF4",
 ]
+# Not needed for MPI runs; the benchmark driver uses it, where installed, to
+# abort the whole job when one rank fails
+mpi = ["mpi4py"]
 
 [project.urls]
 repository = "https://github.com/muSpectre/muNavierStokes"

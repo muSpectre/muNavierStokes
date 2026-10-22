@@ -53,6 +53,7 @@ Tests run in CI on every push (see `.github/workflows/tests.yml`).
 
 ## Dependencies
 
-`muGrid` (with FFT + NetCDF support), `mpi4py`, `numpy`; plus
+`muGrid` (≥ 1.6.0, with FFT + NetCDF support; built with MPI for parallel
+runs, which need no `mpi4py`), `numpy`; plus
 `matplotlib` and `netCDF4` for the post-processing scripts. Install the test
 extras with `pip install -e ".[test]"`.

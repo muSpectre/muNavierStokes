@@ -26,12 +26,9 @@ import time
 
 import numpy as np
 
-from muNavierStokes import NavierStokes
+from muGrid import Communicator
 
-try:
-    from mpi4py import MPI
-except ImportError:  # serial fall-back when mpi4py is not installed
-    MPI = None
+from muNavierStokes import NavierStokes
 
 PHYSICAL_SIZE = (1, 1, 1)
 
@@ -66,9 +63,9 @@ def main():
     ap.add_argument("--json", action="store_true", help="emit a JSON result line")
     args = ap.parse_args()
 
-    comm = MPI.COMM_WORLD if MPI is not None else None
-    rank = comm.Get_rank() if comm is not None else 0
-    nranks = comm.Get_size() if comm is not None else 1
+    # MPI_COMM_WORLD under mpiexec (muGrid starts MPI; no mpi4py), else serial
+    comm = Communicator.world()
+    rank, nranks = comm.rank, comm.size
     device = None if args.device == "cpu" else args.device
 
     n = args.nb_grid_pts
@@ -89,8 +86,7 @@ def main():
     for _ in range(args.warmup):
         ns.rk4_step(state, 0.0, dt)
     sync()
-    if comm is not None:
-        comm.Barrier()
+    comm.barrier()
 
     t0 = time.perf_counter()
     for i in range(args.steps):
@@ -99,8 +95,7 @@ def main():
     elapsed = time.perf_counter() - t0
 
     # The slowest rank governs the wall time of a synchronous step.
-    if comm is not None:
-        elapsed = comm.allreduce(elapsed, op=MPI.MAX)
+    elapsed = float(comm.max(elapsed))
     secs = elapsed / args.steps
 
     npts = int(np.prod(ns.fft.nb_domain_grid_pts))
